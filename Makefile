@@ -1,14 +1,14 @@
 
 
 ALL_DIST:=
-
+DIST_NAME:=snow-cmd
 # define_release_pack: GOOS GOARCH ExecuteEndfix
 define define_release_pack
 
-ALL_DIST+=dist/cmd-${1}-${2}${3}
+ALL_DIST+=dist/${DIST_NAME}-${1}-${2}${3}
 
-dist/snow-cmd-${1}-${2}${3}:
-	GO_ARCH=${2} GOOS=${1} go build -v -o dist/snow-cmd-${1}-${2}${3} ./cmd
+dist/${DIST_NAME}-${1}-${2}${3}:
+	GO_ARCH=${2} GOOS=${1} go build -v -o dist/${DIST_NAME}-${1}-${2}${3} ./cmd
 
 endef
 
