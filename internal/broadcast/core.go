@@ -2,11 +2,10 @@ package broadcast
 
 import (
 	"encoding/binary"
-	"fmt"
 	"net"
+	"snow/internal/membership"
 	"snow/internal/state"
 	"snow/tool"
-	"sort"
 	"time"
 )
 
@@ -14,23 +13,12 @@ import (
 type Server struct {
 	listener net.Listener
 	Config   *Config
-	Member   MemberShipList
+	Member   membership.MemberShipList
 	State    state.State
 	Action   Action
+	client   net.Dialer //客户端连接器
 }
 
-type MemberShipList struct {
-	lock tool.ReentrantLock // 保护 clients 的并发访问并保证 并集群成员有相同的视图
-	//这个就是membership list
-	IPTable [][]byte
-	//这里存放连接和元数据
-	MetaData map[string]*MetaData
-}
-
-type MetaData struct {
-	clients net.Conn
-	version int
-}
 type area struct {
 	current int
 	left    int
@@ -45,7 +33,7 @@ type Action struct {
 	ReliableCallback *func(isConverged bool) //可靠消息的回调逻辑，只对根节点有作用。表示这条消息是否已经被广播到了全局
 }
 
-func (s *Server) ReduceReliableTimeout(m []byte, f func(isConverged bool)) {
+func (s *Server) ReduceReliableTimeout(m []byte, configAction *func(isConverged bool)) {
 	s.State.ReliableMsgLock.Lock()
 	defer s.State.ReliableMsgLock.Unlock()
 	hash := string(m)
@@ -54,18 +42,24 @@ func (s *Server) ReduceReliableTimeout(m []byte, f func(isConverged bool)) {
 		return
 	}
 	r.Counter--
+
 	if r.Counter == 0 {
 		delete(s.State.ReliableTimeout, hash)
 		//如果计数器为0代表已经收到了全部消息，这时候就可以触发根节点的回调方法
 		if r.IsRoot {
-			go f(true)
+			if configAction != nil {
+				go (*configAction)(true)
+			}
+			if r.Action != nil {
+				go (*r.Action)(true)
+			}
 			return
 		}
 		newMsg := make([]byte, 1+len(hash)+s.Config.IpLen())
 		copy(newMsg[1+len(hash):], s.Config.IPBytes())
 		newMsg[0] = reliableMsgAck
 		copy(newMsg[1:], hash)
-		s.SendMessage(ByteToIPv4Port(r.Ip), newMsg)
+		s.SendMessage(tool.ByteToIPv4Port(r.Ip), newMsg)
 
 	}
 
@@ -85,34 +79,6 @@ func (s *Server) IsReceived(m []byte) bool {
 	return s.State.State.Add(m, s.Config.ExpirationTime)
 }
 
-func (m *MemberShipList) MemberLen() int {
-	return len(m.IPTable)
-}
-
-// FindOrInsert 第二个参数表示是否进行了更新,每次调用这个方法索引就会刷新
-func (m *MemberShipList) FindOrInsert(target []byte) (int, bool) {
-	m.lock.Lock()
-	defer m.lock.Unlock()
-	// 使用二分查找定位目标位置
-	index := sort.Search(len(m.IPTable), func(i int) bool {
-		return BytesCompare(m.IPTable[i], target) >= 0
-	})
-
-	// 如果找到相等的元素，直接返回原数组和索引
-	if index < len(m.IPTable) && BytesCompare(m.IPTable[index], target) == 0 {
-		return index, false
-	}
-
-	// 如果没有找到，插入到正确的位置
-	m.IPTable = append(m.IPTable, nil)
-	copy(m.IPTable[index+1:], m.IPTable[index:])
-	m.IPTable[index] = append([]byte{}, target...) // 插入新元素
-
-	fmt.Println("Inserted at index:", index)
-	return index, true
-
-}
-
 // BytesCompare 比较两个 []byte 的大小
 func BytesCompare(a, b []byte) int {
 	if len(a) < len(b) {
@@ -130,37 +96,14 @@ func BytesCompare(a, b []byte) int {
 	return 0
 }
 
-func NewMetaData(conn net.Conn) *MetaData {
-	return &MetaData{
-		version: 0,
-		clients: conn,
-	}
-}
-func (m *MemberShipList) AddNode(conn net.Conn, joinRing bool) {
-	m.lock.Lock()
-	defer m.lock.Unlock()
-	addr := conn.RemoteAddr().String()
-	v, ok := m.MetaData[addr]
-	if ok {
-		v.clients = conn
-	} else {
-		m.MetaData[addr] = NewMetaData(conn)
-	}
-	if joinRing {
-		bytes := IPv4To6Bytes(addr)
-		m.FindOrInsert(bytes)
-	}
-
-}
-
 func ObtainOnIPRing(current int, offset int, n int) int {
 	return (current + offset + n) % n
 }
 
 // InitMessage 发消息
-func (s *Server) InitMessage(msgType MsgType) (map[string][]byte, int64) {
-	s.Member.lock.Lock()
-	defer s.Member.lock.Unlock()
+func (s *Server) InitMessage(msgType MsgType, action MsgAction) (map[string][]byte, int64) {
+	s.Member.Lock()
+	defer s.Member.Unlock()
 	if s.Member.MemberLen() == 1 {
 		return make(map[string][]byte), 0
 	}
@@ -172,14 +115,14 @@ func (s *Server) InitMessage(msgType MsgType) (map[string][]byte, int64) {
 	leftIP := s.Member.IPTable[leftIndex]
 	rightIP := s.Member.IPTable[rightIndex]
 
-	return s.NextHopMember(msgType, leftIP, rightIP, true)
+	return s.NextHopMember(msgType, action, leftIP, rightIP, true)
 }
 
-func (s *Server) NextHopMember(msgType byte, leftIP []byte, rightIP []byte, isRoot bool) (map[string][]byte, int64) {
+func (s *Server) NextHopMember(msgType MsgType, msgAction MsgAction, leftIP []byte, rightIP []byte, isRoot bool) (map[string][]byte, int64) {
 	coloring := msgType == coloringMsg
 	//todo 这里可以优化读写锁
-	s.Member.lock.Lock()
-	defer s.Member.lock.Unlock()
+	s.Member.Lock()
+	defer s.Member.Unlock()
 	if s.Member.MemberLen() == 1 {
 		return make(map[string][]byte), 0
 	}
@@ -210,6 +153,7 @@ func (s *Server) NextHopMember(msgType byte, leftIP []byte, rightIP []byte, isRo
 	for _, v := range next {
 		payload := make([]byte, 0)
 		payload = append(payload, msgType)
+		payload = append(payload, msgAction)
 		payload = append(payload, IPTable[v.left]...)
 		payload = append(payload, IPTable[v.right]...)
 		if isRoot {
@@ -217,36 +161,16 @@ func (s *Server) NextHopMember(msgType byte, leftIP []byte, rightIP []byte, isRo
 			binary.BigEndian.PutUint64(timestamp, uint64(unix))
 			payload = append(payload, timestamp...)
 		}
-		forwardList[ByteToIPv4Port(IPTable[v.current])] = payload
+		forwardList[tool.ByteToIPv4Port(IPTable[v.current])] = payload
 
 	}
 
 	return forwardList, unix
 }
-func CreateSubTree(left int, right int, current int, n int, k int, coloring bool) ([]*area, int) {
-	offset := 0
-	//偏移到正数方便算
-	if left > right {
-		offset = left
-		current = ObtainOnIPRing(current, -offset, n)
-		right = ObtainOnIPRing(right, -offset, n)
-		left = 0
+func (s *Server) ApplyJoin(ip string) {
+	err := s.connectToClient(ip)
+	if err != nil {
+		return
 	}
-	tree := make([]*area, 0)
-	//是否进行节点染色
-	if coloring {
-		tree = ColoringMultiwayTree(left, right, current, k)
-	} else {
-		tree = BalancedMultiwayTree(left, right, current, k)
-	}
-	areaLen := right - left + 1
-	//计算完把偏移设置为原位
-	for _, v := range tree {
-		v.current = ObtainOnIPRing(v.current, offset, n)
-		v.right = ObtainOnIPRing(v.right, offset, n)
-		v.left = ObtainOnIPRing(v.left, offset, n)
-
-	}
-
-	return tree, areaLen
+	s.SendMessage(ip, PackTag(nodeChange, applyJoin))
 }

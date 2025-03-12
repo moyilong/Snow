@@ -6,40 +6,39 @@ import (
 	"time"
 )
 
-func (s *Server) BroadcastMessage(message string) error {
-	s.Member.lock.Lock()
-	defer s.Member.lock.Unlock()
-	member, _ := s.InitMessage(regularMsg)
-	messageBytes := []byte(message)
+func (s *Server) RegularMessage(message []byte, msgAction MsgAction) error {
+	s.Member.Lock()
+	defer s.Member.Unlock()
+	member, _ := s.InitMessage(regularMsg, msgAction)
 	for ip, payload := range member {
-		length := uint32(len(messageBytes) + s.Config.Placeholder())
+		length := uint32(len(message) + s.Config.Placeholder())
 		newMsg := make([]byte, length)
 		copy(newMsg, payload)
-		copy(newMsg[s.Config.Placeholder():], messageBytes)
+		copy(newMsg[s.Config.Placeholder():], message)
 		s.SendMessage(ip, newMsg)
 	}
 	return nil
 }
 
-func (s *Server) ColoringMessage(message string) error {
-	s.Member.lock.Lock()
-	defer s.Member.lock.Unlock()
-	member, _ := s.InitMessage(coloringMsg)
-	messageBytes := []byte(message)
+func (s *Server) ColoringMessage(message []byte, msgAction MsgAction) error {
+	s.Member.Lock()
+	defer s.Member.Unlock()
+	member, _ := s.InitMessage(coloringMsg, msgAction)
 	for ip, payload := range member {
-		length := uint32(len(messageBytes) + s.Config.Placeholder())
+		length := uint32(len(message) + s.Config.Placeholder())
 		newMsg := make([]byte, length)
 		copy(newMsg, payload)
-		copy(newMsg[s.Config.Placeholder():], messageBytes)
+		copy(newMsg[s.Config.Placeholder():], message)
 		s.SendMessage(ip, newMsg)
 	}
 	return nil
 }
 
 // GossipMessage gossip协议是有可能广播给发送给自己的节点的= =
-func (s *Server) GossipMessage(msg string) error {
+func (s *Server) GossipMessage(msg string, msgAction MsgAction) error {
 	bytes := make([]byte, len(msg)+TimeLen+TagLen)
 	bytes[0] = gossipMsg
+	bytes[1] = msgAction
 	copy(bytes[TagLen:], tool.TimeBytes())
 	copy(bytes[TagLen+TimeLen:], msg)
 	return s.SendGossip(bytes)
@@ -49,7 +48,7 @@ func (s *Server) SendGossip(msg []byte) error {
 	idx, _ := s.Member.FindOrInsert(s.Config.IPBytes())
 	randomNodes := tool.GetRandomExcluding(0, s.Member.MemberLen()-1, idx, s.Config.FanOut)
 	for _, v := range randomNodes {
-		s.SendMessage(ByteToIPv4Port(s.Member.IPTable[v]), msg)
+		s.SendMessage(tool.ByteToIPv4Port(s.Member.IPTable[v]), msg)
 	}
 	return nil
 }
@@ -65,15 +64,15 @@ func (s *Server) ForwardMessage(msg []byte, member map[string][]byte) error {
 	return nil
 }
 
-func (s *Server) ReliableMessage(message string) error {
-	s.Member.lock.Lock()
-	defer s.Member.lock.Unlock()
-	member, unix := s.InitMessage(reliableMsg)
+func (s *Server) ReliableMessage(message string, msgAction MsgAction, action *func(isSuccess bool)) error {
+	s.Member.Lock()
+	defer s.Member.Unlock()
+	member, unix := s.InitMessage(reliableMsg, msgAction)
 	timeBytes := make([]byte, 8)
 	binary.BigEndian.PutUint64(timeBytes, uint64(unix))
 	timeBytes = append(timeBytes, message...)
-	hash := []byte(tool.Hash([]byte(timeBytes)))
-	s.State.AddReliableTimeout(hash, true, len(member), nil)
+	hash := []byte(tool.Hash(timeBytes))
+	s.State.AddReliableTimeout(hash, true, len(member), nil, action)
 	timeout := s.Config.GetReliableTimeOut()
 	time.AfterFunc(time.Duration(timeout)*time.Second, func() {
 		reliableTimeout := s.State.GetReliableTimeout(hash)
@@ -81,6 +80,9 @@ func (s *Server) ReliableMessage(message string) error {
 		if reliableTimeout != nil {
 			if s.Action.ReliableCallback != nil {
 				(*s.Action.ReliableCallback)(false)
+			}
+			if action != nil {
+				(*action)(false)
 			}
 		}
 	})
