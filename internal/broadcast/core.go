@@ -1,12 +1,13 @@
 package broadcast
 
 import (
-	"encoding/binary"
+	"bytes"
+	"encoding/gob"
+	"fmt"
 	"net"
 	"snow/internal/membership"
 	"snow/internal/state"
 	"snow/tool"
-	"time"
 )
 
 // Server 定义服务器结构体
@@ -17,6 +18,7 @@ type Server struct {
 	State    state.State
 	Action   Action
 	client   net.Dialer //客户端连接器
+	isClosed bool       //是否关闭了
 }
 
 type area struct {
@@ -33,10 +35,15 @@ type Action struct {
 	ReliableCallback *func(isConverged bool) //可靠消息的回调逻辑，只对根节点有作用。表示这条消息是否已经被广播到了全局
 }
 
-func (s *Server) ReduceReliableTimeout(m []byte, configAction *func(isConverged bool)) {
+func (s *Server) ReduceReliableTimeout(msg []byte, configAction *func(isConverged bool)) {
 	s.State.ReliableMsgLock.Lock()
 	defer s.State.ReliableMsgLock.Unlock()
-	hash := string(m)
+	//msgType := msg[0]
+	//消息要进行的动作
+	msgAction := msg[1]
+	//截取32位
+	prefix := TagLen + TimeLen + HashLen
+	hash := string(msg[TagLen+TimeLen : prefix])
 	r, ok := s.State.ReliableTimeout[hash]
 	if !ok {
 		return
@@ -50,17 +57,20 @@ func (s *Server) ReduceReliableTimeout(m []byte, configAction *func(isConverged 
 			if configAction != nil {
 				go (*configAction)(true)
 			}
-			if r.Action != nil {
-				go (*r.Action)(true)
-			}
 			return
 		}
-		newMsg := make([]byte, 1+len(hash)+s.Config.IpLen())
-		copy(newMsg[1+len(hash):], s.Config.IPBytes())
-		newMsg[0] = reliableMsgAck
-		copy(newMsg[1:], hash)
-		s.SendMessage(tool.ByteToIPv4Port(r.Ip), newMsg)
+		if r.Action != nil {
+			go (*r.Action)(true)
+		}
+		newMsg := make([]byte, len(msg))
+		copy(newMsg, msg)
+		copy(newMsg[prefix:prefix+s.Config.IpLen()], s.Config.IPBytes())
+		s.SendMessage(tool.ByteToIPv4Port(r.Ip), []byte{}, newMsg)
+		//断开连接
+		if msgAction == nodeLeave {
 
+			s.Member.RemoveMember(msg[len(msg)-s.Config.IpLen():])
+		}
 	}
 
 }
@@ -79,33 +89,16 @@ func (s *Server) IsReceived(m []byte) bool {
 	return s.State.State.Add(m, s.Config.ExpirationTime)
 }
 
-// BytesCompare 比较两个 []byte 的大小
-func BytesCompare(a, b []byte) int {
-	if len(a) < len(b) {
-		return -1
-	} else if len(a) > len(b) {
-		return 1
-	}
-	for i := range a {
-		if a[i] < b[i] {
-			return -1
-		} else if a[i] > b[i] {
-			return 1
-		}
-	}
-	return 0
-}
-
 func ObtainOnIPRing(current int, offset int, n int) int {
 	return (current + offset + n) % n
 }
 
 // InitMessage 发消息
-func (s *Server) InitMessage(msgType MsgType, action MsgAction) (map[string][]byte, int64) {
+func (s *Server) InitMessage(msgType MsgType, action MsgAction) (map[string][]byte, []byte) {
 	s.Member.Lock()
 	defer s.Member.Unlock()
 	if s.Member.MemberLen() == 1 {
-		return make(map[string][]byte), 0
+		return make(map[string][]byte), nil
 	}
 	current, _ := s.Member.FindOrInsert(s.Config.IPBytes())
 	//当前的索引往左偏移
@@ -118,13 +111,13 @@ func (s *Server) InitMessage(msgType MsgType, action MsgAction) (map[string][]by
 	return s.NextHopMember(msgType, action, leftIP, rightIP, true)
 }
 
-func (s *Server) NextHopMember(msgType MsgType, msgAction MsgAction, leftIP []byte, rightIP []byte, isRoot bool) (map[string][]byte, int64) {
+func (s *Server) NextHopMember(msgType MsgType, msgAction MsgAction, leftIP []byte, rightIP []byte, isRoot bool) (map[string][]byte, []byte) {
 	coloring := msgType == coloringMsg
 	//todo 这里可以优化读写锁
 	s.Member.Lock()
 	defer s.Member.Unlock()
 	if s.Member.MemberLen() == 1 {
-		return make(map[string][]byte), 0
+		return make(map[string][]byte), nil
 	}
 	forwardList := make(map[string][]byte)
 	//要转发的所有节点
@@ -149,7 +142,7 @@ func (s *Server) NextHopMember(msgType MsgType, msgAction MsgAction, leftIP []by
 		secondaryRoot := ObtainOnIPRing(currentIndex, -1, s.Member.MemberLen())
 		next = append(next, &area{left: leftIndex, right: rightIndex, current: secondaryRoot})
 	}
-	unix := time.Now().Unix()
+	randomNumber := tool.RandomNumber()
 	for _, v := range next {
 		payload := make([]byte, 0)
 		payload = append(payload, msgType)
@@ -157,20 +150,67 @@ func (s *Server) NextHopMember(msgType MsgType, msgAction MsgAction, leftIP []by
 		payload = append(payload, IPTable[v.left]...)
 		payload = append(payload, IPTable[v.right]...)
 		if isRoot {
-			timestamp := make([]byte, 8)
-			binary.BigEndian.PutUint64(timestamp, uint64(unix))
-			payload = append(payload, timestamp...)
+			payload = append(payload, randomNumber...)
 		}
 		forwardList[tool.ByteToIPv4Port(IPTable[v.current])] = payload
 
 	}
 
-	return forwardList, unix
+	return forwardList, randomNumber
 }
+
+// 加入的时候要和一个节点进行交互，离开则不用
 func (s *Server) ApplyJoin(ip string) {
 	err := s.connectToClient(ip)
 	if err != nil {
 		return
 	}
-	s.SendMessage(ip, PackTag(nodeChange, applyJoin))
+	if ip == s.Config.ServerAddress {
+		return
+	}
+	s.SendMessage(ip, []byte{}, PackTag(nodeChange, applyJoin))
+}
+
+func (s *Server) ApplyLeave() {
+	f := func(isSuccess bool) {
+		//如果成功了，当前节点下线。如果不成功，在发起一次请求
+		if isSuccess {
+			//进行下线操作
+			stop := struct{}{}
+			stopCh <- stop
+			s.Close()
+			s.Member.Clean()
+			s.isClosed = true
+		} else {
+			//失败就再发一次
+			s.ApplyLeave()
+		}
+	}
+	s.ReliableMessage(s.Config.IPBytes(), nodeLeave, &f)
+}
+func (s *Server) ReportLeave(ip []byte) {
+	s.Member.RemoveMember(ip)
+	s.ColoringMessage(ip, reportLeave)
+}
+
+func (s *Server) exportState() []byte {
+	var buffer bytes.Buffer
+	encoder := gob.NewEncoder(&buffer)
+	err := encoder.Encode(s.Member.MetaData)
+	if err != nil {
+		fmt.Println("GOB Serialization failed:", err)
+		return nil
+	}
+	return buffer.Bytes()
+}
+func (s *Server) importState(msg []byte) {
+	buffer := bytes.NewBuffer(msg)
+	var MetaData map[string]*membership.MetaData
+	decoder := gob.NewDecoder(buffer)
+	err := decoder.Decode(&MetaData)
+	if err != nil {
+		fmt.Println("GOB Desialization failed:", err)
+		return
+	}
+	s.Member.InitState(MetaData, s.Config.IPBytes())
 }

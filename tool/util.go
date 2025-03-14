@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"github.com/zeebo/blake3"
+	"math"
 	"math/rand"
 	"net"
 	"net/http"
@@ -11,6 +12,13 @@ import (
 	"strconv"
 	"time"
 )
+
+// pushScale is the minimum number of nodes
+// before we start scaling the push/pull timing. The scale
+// effect is the log2(Nodes) - log2(pushScale). This means
+// that the 33rd node will cause us to double the interval,
+// while the 65th will triple it.
+const pushScaleThreshold = 32
 
 func SendHttp(from string, target string, data []byte) {
 	values := url.Values{}
@@ -31,8 +39,8 @@ func SendHttp(from string, target string, data []byte) {
 	http.Get(fullURL)
 }
 
-// GetRandomExcluding 定义一个函数，生成指定范围内的随机数，如果取到特定值则重新生成
-func GetRandomExcluding(min, max, exclude int, k int) []int {
+// KRandomNodes 定义一个函数，生成指定范围内的随机数，如果取到特定值则重新生成
+func KRandomNodes(min, max, exclude int, k int) []int {
 	res := make([]int, 0)
 	if max-min+1 <= k+1 {
 		for ; min <= max; min++ {
@@ -68,12 +76,12 @@ func Hash(msg []byte) string {
 	return sum
 }
 
-func TimeBytes() []byte {
-	unix := time.Now().Unix()
-	timestamp := make([]byte, 8)
-	binary.BigEndian.PutUint64(timestamp, uint64(unix))
-	return timestamp
-}
+//	func TimeBytes() []byte {
+//		unix := time.Now().Unix()
+//		timestamp := make([]byte, 8)
+//		binary.BigEndian.PutUint64(timestamp, uint64(unix))
+//		return timestamp
+//	}
 func BytesToTime(data []byte) int64 {
 	return int64(binary.BigEndian.Uint64(data))
 }
@@ -117,4 +125,34 @@ func ByteToIPv4Port(data []byte) string {
 
 	// 构造 IP:Port 字符串
 	return fmt.Sprintf("%s:%d", ip.String(), port)
+}
+
+// PushScale is used to scale the time interval at which push/pull
+// syncs take place. It is used to prevent network saturation as the
+// cluster size grows
+func PushScale(interval time.Duration, n int) time.Duration {
+	// Don't scale until we cross the threshold
+	if n <= pushScaleThreshold {
+		return interval
+	}
+	multiplier := math.Ceil(math.Log2(float64(n))-math.Log2(pushScaleThreshold)) + 1.0
+	return time.Duration(multiplier) * interval
+}
+
+// 获取8个随机的byte值
+func RandomNumber() []byte {
+	// 生成一个随机的 int64（可能包含负数）
+	randomInt64 := rand.Uint64()
+
+	// 将 int64 转换为 8 个字节的切片
+	bytes := make([]byte, 8)
+	binary.BigEndian.PutUint64(bytes, uint64(randomInt64))
+
+	return bytes
+}
+
+func CopyMsg(msg []byte) []byte {
+	res := make([]byte, len(msg))
+	copy(res, msg)
+	return res
 }

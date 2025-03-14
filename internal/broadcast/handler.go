@@ -2,7 +2,6 @@ package broadcast
 
 import (
 	"bytes"
-	"fmt"
 	"log"
 	"net"
 	"snow/tool"
@@ -35,7 +34,9 @@ const (
 	applyJoin
 	joinStateSync
 	nodeJoin
-	nodeLeave
+	nodeLeave   //这是自己请求离开的方法
+	reportLeave //这是被别人上报的节点离开方法
+	regularStateSync
 )
 
 func handler(msg []byte, s *Server, conn net.Conn) {
@@ -46,59 +47,68 @@ func handler(msg []byte, s *Server, conn net.Conn) {
 	msgType := msg[0]
 	//消息要进行的动作
 	msgAction := msg[1]
+	NodeChange(msg[1:], parentIP, s, conn)
 	switch msgType {
 	case regularMsg:
 		body := s.Config.CutBytes(msg)
-		if isFirst(body, msgAction, s) {
-			forward(msg, s, parentIP)
+		if !isFirst(body, msgType, msgAction, s) {
+			return
 		}
+		forward(msg, s, parentIP)
 	case coloringMsg:
 		body := s.Config.CutBytes(msg)
-		if isFirst(body, msgAction, s) {
-			if msgAction == nodeJoin {
-				//如果不存在
-				s.Member.AddMember(s.Config.CutTimestamp(body))
-			}
-			forward(msg, s, parentIP)
+		if !isFirst(body, msgType, msgAction, s) {
+			return
 		}
+		if msgAction == nodeJoin {
+			//如果不存在
+			s.Member.AddMember(s.Config.CutTimestamp(body))
+		} else if msgAction == reportLeave {
+			s.Member.RemoveMember(s.Config.CutTimestamp(body))
+		}
+		forward(msg, s, parentIP)
 	case reliableMsg:
 		body := s.Config.CutBytes(msg)
-		if isFirst(body, msgAction, s) {
-			//如果自己是叶子节点发送ack给父节点	并删除ack的map
-			forward(msg, s, parentIP)
+		if !isFirst(body, msgType, msgAction, s) {
+			return
 		}
+		//如果自己是叶子节点发送ack给父节点	并删除ack的map
+		forward(msg, s, parentIP)
 	case reliableMsgAck:
 		//ack不需要ActionType
-		body := msg[1:]
+		body := msg[TagLen:]
 		//去重的消息可能会过滤掉相同的ack。在消息尾部追加ip来解决
-		if isFirst(body, msgAction, s) {
-			//减少计数器
-			body = body[:len(body)-s.Config.IpLen()]
-			s.ReduceReliableTimeout(body, s.Action.ReliableCallback)
+		if !isFirst(body, msgType, msgAction, s) {
+			return
 		}
+
+		//减少计数器
+		s.ReduceReliableTimeout(msg, s.Action.ReliableCallback)
 	case gossipMsg:
 		//gossip不需要和Snow算法一样携带俩个ip
-		body := msg[1:]
-		if isFirst(body, msgAction, s) {
-			data := make([]byte, len(msg))
-			copy(data, msg)
-			s.SendGossip(data)
+		body := msg[TagLen:]
+		if !isFirst(body, msgType, msgAction, s) {
+			return
 		}
+		data := make([]byte, len(msg))
+		copy(data, msg)
+		s.SendGossip(data)
 	case nodeChange:
 		//分别是消息类型，消息时间戳，加入节点的ip
-		if isFirst(msg[1:], msgAction, s) {
-			NodeChange(msg[1:], parentIP, s, conn)
+		if !isFirst(msg[1:], msgType, msgAction, s) {
+			return
 		}
+
 	default:
 		log.Printf("Received non type message from %v: %s\n", conn.RemoteAddr(), string(msg))
 	}
 }
 
-func isFirst(body []byte, action MsgAction, s *Server) bool {
+func isFirst(body []byte, msgType MsgType, action MsgAction, s *Server) bool {
 	if s.IsReceived(body) && s.Config.ExpirationTime > 0 {
 		return false
 	}
-	if action == userMsg {
+	if action == userMsg && msgType != reliableMsgAck {
 		//如果第二个byte的类型是userMsg才让用户进行处理
 		body = s.Config.CutTimestamp(body)
 		//这是让用户自己判断消息是否处理过
@@ -122,17 +132,25 @@ func forward(msg []byte, s *Server, parentIp string) {
 	}
 	//消息中会附带发送给自己的节点
 	if msgType == reliableMsg {
-		//写入map
+		//写入map 以便根据ack进行删除
 		b := s.Config.CutBytes(msg)
 		hash := []byte(tool.Hash(b))
 		if len(member) == 0 {
 			//叶子节点 直接发送ack
-			//消息内容为1个type，加上当前地址长度+ack长度
-			newMsg := make([]byte, 1+len(hash)+s.Config.IpLen())
-			copy(newMsg[1+len(hash):], s.Config.IPBytes())
-			newMsg[0] = reliableMsgAck
-			copy(newMsg[1:], hash)
-			s.SendMessage(parentIp, newMsg)
+			//消息内容为2个type，加上当前地址长度+ack长度
+			newMsg := make([]byte, 0)
+			newMsg = append(newMsg, reliableMsgAck)
+			newMsg = append(newMsg, msgAction)
+			newMsg = append(newMsg, tool.RandomNumber()...)
+			newMsg = append(newMsg, hash...)
+			// 叶子节点ip
+			newMsg = append(newMsg, s.Config.IPBytes()...)
+			//根节点ip
+			newMsg = append(newMsg, msg[len(msg)-s.Config.IpLen():]...)
+			if msgAction == nodeLeave {
+				s.Member.RemoveMember(msg[len(msg)-s.Config.IpLen():])
+			}
+			s.SendMessage(parentIp, []byte{}, newMsg)
 		} else {
 			//不是发送节点的化，不需要任何回调
 			s.State.AddReliableTimeout(hash, false, len(member), tool.IPv4To6Bytes(parentIp), nil)
@@ -142,9 +160,7 @@ func forward(msg []byte, s *Server, parentIp string) {
 		}
 
 	}
-	if s.Config.LocalAddress == "127.0.0.1:5008" {
-		fmt.Print()
-	}
+
 	s.ForwardMessage(msg, member)
 
 }

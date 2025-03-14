@@ -5,10 +5,12 @@ import (
 	"net"
 	"snow/tool"
 	"sort"
+	"time"
 )
 
 type MetaData struct {
 	client  net.Conn
+	server  net.Conn
 	Version int
 }
 
@@ -20,6 +22,13 @@ type MemberShipList struct {
 	MetaData map[string]*MetaData
 }
 
+func (m *MemberShipList) Clean() {
+	m.Lock()
+	defer m.Unlock()
+	m.IPTable = make([][]byte, 0)
+	m.MetaData = make(map[string]*MetaData)
+}
+
 func (m *MemberShipList) InitState(metaDataMap map[string]*MetaData, currentIp []byte) {
 	m.Lock()
 	defer m.Unlock()
@@ -28,13 +37,31 @@ func (m *MemberShipList) InitState(metaDataMap map[string]*MetaData, currentIp [
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	m.MetaData = metaDataMap
+	for k, v := range metaDataMap {
+		node, ok := m.MetaData[k]
+		if ok {
+			if node.Version > v.Version {
+				//所有的元数据都要写这里
+				node.Version = v.Version
+			}
+		} else {
+			m.MetaData[k] = v
+		}
+	}
 	ipTable := make([][]byte, 0)
 	for _, v := range keys {
 		ipTable = append(ipTable, tool.IPv4To6Bytes(v))
 	}
 	m.IPTable = ipTable
 	m.FindOrInsert(currentIp)
+}
+
+func (m *MetaData) GetServer() net.Conn {
+	return m.server
+}
+
+func (m *MetaData) SetServer(server net.Conn) {
+	m.server = server
 }
 
 func (m *MetaData) GetClient() net.Conn {
@@ -128,4 +155,46 @@ func (m *MemberShipList) AddMember(ip []byte) {
 		m.MetaData[tool.ByteToIPv4Port(ip)] = NewEmptyMetaData()
 	}
 	m.FindOrInsert(ip)
+}
+func (m *MemberShipList) RemoveMember(ip []byte) {
+	m.Lock()
+	defer m.Unlock()
+	address := tool.ByteToIPv4Port(ip)
+	data, ok := m.MetaData[address]
+	if ok {
+		if data.client != nil {
+			time.AfterFunc(2*time.Second, func() {
+				data.client.Close()
+			})
+		}
+		if data.server != nil {
+			time.AfterFunc(2*time.Second, func() {
+				data.server.Close()
+			})
+		}
+		delete(m.MetaData, tool.ByteToIPv4Port(ip))
+	}
+	idx, _ := m.FindOrInsert(ip)
+	//删除当前元素
+	m.IPTable = append(m.IPTable[:idx], m.IPTable[idx+1:]...)
+}
+func (m *MemberShipList) GetMember(key string) *MetaData {
+	m.Lock()
+	defer m.Unlock()
+	return m.MetaData[key]
+}
+func (m *MemberShipList) PutMemberIfNil(key string, value *MetaData) {
+	m.Lock()
+	defer m.Unlock()
+	data := m.MetaData[key]
+	if data == nil {
+		m.MetaData[key] = value
+		return
+	}
+	if data.client == nil && value.client != nil {
+		data.client = value.client
+	}
+	if data.server == nil && value.server != nil {
+		data.server = value.server
+	}
 }

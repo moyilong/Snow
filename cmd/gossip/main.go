@@ -13,14 +13,13 @@ func handleConnection(conn net.Conn) {
 }
 
 func main() {
-	go s(":7070")
-	go s(":7071")
+	go s(":9090")
+	go s(":9071")
 	time.Sleep(3 * time.Second) // 等待服务器启动
 	go main2()
 
 	// 防止主函数退出
-	for {
-	}
+	select {}
 }
 
 func s(port string) {
@@ -44,7 +43,7 @@ func s(port string) {
 
 func main2() {
 	// 指定本地地址
-	localAddr, err := net.ResolveTCPAddr("tcp", "127.0.0.1:7000")
+	localAddr, err := net.ResolveTCPAddr("tcp", "127.0.0.1:9000")
 	if err != nil {
 		fmt.Println("解析本地地址失败:", err)
 		return
@@ -56,7 +55,15 @@ func main2() {
 		Control: func(network, address string, c syscall.RawConn) error {
 			return c.Control(func(fd uintptr) {
 				// 设置 SO_REUSEADDR
-				err := syscall.SetsockoptInt(syscall.Handle(fd), syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
+				//err := syscall.SetsockoptInt(syscall.Handle(fd), syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
+				//if err != nil {
+				//	fmt.Println("设置 SO_REUSEADDR 失败:", err)
+				//}
+				linger := syscall.Linger{
+					Onoff:  1,
+					Linger: 0,
+				}
+				err := syscall.SetsockoptLinger(syscall.Handle(fd), syscall.SOL_SOCKET, syscall.SO_REUSEADDR, &linger)
 				if err != nil {
 					fmt.Println("设置 SO_REUSEADDR 失败:", err)
 				}
@@ -64,21 +71,28 @@ func main2() {
 		},
 	}
 
-	// 连接到第一个服务器
-	conn, err := dialer.Dial("tcp", "127.0.0.1:7070")
-	if err != nil {
-		fmt.Println("连接失败:", err)
-		return
-	}
-	defer conn.Close()
-	fmt.Println("连接成功:", conn.LocalAddr())
-
 	// 连接到第二个服务器
-	conn2, err := dialer.Dial("tcp", "127.0.0.1:7071")
+	conn2, err := dialer.Dial("tcp", "127.0.0.1:9071")
+	//tcpConn := conn2.(*net.TCPConn)
+	//tcpConn.SetLinger(0)
 	if err != nil {
 		fmt.Println("连接失败:", err)
 		return
 	}
-	defer conn2.Close()
 	fmt.Println("连接成功:", conn2.LocalAddr())
+	conn2.Close()
+
+	// 增加延迟，确保端口资源释放
+	time.Sleep(1 * time.Second)
+
+	// 断开之后重连
+	conn2, err = dialer.Dial("tcp", "127.0.0.1:9071")
+	//tcpConn = conn2.(*net.TCPConn)
+	//tcpConn.SetLinger(0)
+	if err != nil {
+		fmt.Println("连接失败:", err)
+		return
+	}
+	fmt.Println("连接成功:", conn2.LocalAddr())
+	defer conn2.Close()
 }
