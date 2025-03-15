@@ -10,15 +10,25 @@ networks:
 
 x-snow-base: &snow-base
   image: snow-test-image
+  entrypoint: bash -C /init.sh
   configs:
     - source: snow-config
       target: /config.yml
-  environment:
-    SNOW_NODE_COUNT: ${SNOW_NODE_COUNT:-8}
+    - source: snow-initor
+      target: /init.sh
+
+x-snow-env: &snow-env
+  SNOW_NODE_COUNT: ${SNOW_NODE_COUNT:-2}
+  SNOW_INIT_PORT: ${SNOW_INIT_PORT:-5000}
+  SNOW_CONFIG_FILE: /config.yml
 
 services:
   snow-1:
     <<: *snow-base
+    environment:
+      <<: *snow-env
+      INITIAL_ADDRESS: 192.0.2.101
+      LOCAL_ADDRESS: 192.0.2.100
     networks:
       snow-cluster-test-nic:
         ipv4_address: 192.0.2.100
@@ -28,27 +38,58 @@ services:
     networks:
       snow-cluster-test-nic:
         ipv4_address: 192.0.2.101
+    environment:
+      <<: *snow-env
+      INITIAL_ADDRESS: 192.0.2.100
+      LOCAL_ADDRESS: 192.0.2.101
 
   snow-3:
     <<: *snow-base
     networks:
       snow-cluster-test-nic:
         ipv4_address: 192.0.2.102
+    environment:
+      <<: *snow-env
+      INITIAL_ADDRESS: 192.0.2.100
+      LOCAL_ADDRESS: 192.0.2.102
 
 configs:
   snow-config:
     content: |
       Port: 5000
-      IPv6: false
+      Ipv6: false
       FanOut: 2
-      LocalAddress: 127.0.0.1
+      SyncSend: true
+      LocalAddress: ##LOCAL_ADDRESS##
       Coloring: ${SNOW_COLORING:-false}
       ClientPortOffset: 1000
       ExpirationTime: 60s
       PushPullInterval: 60s
       TCPTimeout: 60s
-      InitalServer: 127.0.0.1:50000
+      InitalServer: ##INITIAL_ADDRESS##:5000
       Test: true
       DefaultAddress: 192.0.2.100:5000,192.0.2.101:5000,192.0.2.102:5000
       
+  snow-initor:
+    content: |
+      #!/bin/bash
 
+      cat - << EOF | tee /config.yml
+        Port: 5000
+        Ipv6: false
+        FanOut: 2
+        SyncSend: true
+        LocalAddress: $$LOCAL_ADDRESS
+        Coloring: ${SNOW_COLORING:-false}
+        ClientPortOffset: 1000
+        ExpirationTime: 60s
+        PushPullInterval: 60s
+        TCPTimeout: 60s
+        InitalServer: $$INITIAL_ADDRESS:5000
+        Test: true
+        DefaultAddress: 192.0.2.100:5000,192.0.2.101:5000,192.0.2.102:5000
+      EOF
+
+      sleep 5
+
+      /snow

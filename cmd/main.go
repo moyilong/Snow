@@ -25,10 +25,14 @@ func getIntFromEnv(envName string, defValue int) int {
 }
 
 func main() {
-	configPath := "config.yml"
+	configPath := os.Getenv("SNOW_CONFIG_FILE")
+
+	if configPath == "" {
+		configPath = "config.yml"
+	}
 
 	n := getIntFromEnv("SNOW_NODE_COUNT", 200)
-	initPort := getIntFromEnv("SNOW_INIT_PORT", 5000)
+	initPort := getIntFromEnv("SNOW_INIT_PORT", 50000)
 	serverList := make([]*broadcast.Server, 0)
 	//serversAddresses := initAddress(n)
 	action := createAction()
