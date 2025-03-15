@@ -15,4 +15,6 @@ WORKDIR /
 
 COPY --from=build --chmod=0777 /snow /snow
 
+ENV TZ=Asia/Shanghai
+
 ENTRYPOINT [ "/snow" ]

@@ -16,8 +16,8 @@ x-snow-base: &snow-base
       target: /init.sh
 
 x-snow-env: &snow-env
-  SNOW_NODE_COUNT: ${SNOW_NODE_COUNT:-4}
-  SNOW_INIT_PORT: ${SNOW_INIT_PORT:-5000}
+  SNOW_NODE_COUNT: ${SNOW_NODE_COUNT:-400}
+  SNOW_INIT_PORT: ${SNOW_INIT_PORT:-50000}
   SNOW_CONFIG_FILE: /config.yml
 
 services:
@@ -60,7 +60,7 @@ configs:
       #!/bin/bash
 
       cat - << EOF | tee /config.yml
-        Port: 5000
+        Port: 50000
         Ipv6: false
         FanOut: 2
         Test: true
@@ -71,8 +71,8 @@ configs:
         ExpirationTime: 60s
         PushPullInterval: 60s
         TCPTimeout: 60s
-        InitialServer: 192.0.2.100:5000
-        DefaultAddress: 192.0.2.100:5000,192.0.2.101:5000,192.0.2.102:5000
+        InitialServer: 192.0.2.100:50000
+        DefaultAddress: 192.0.2.100:50000,192.0.2.101:50000,192.0.2.102:50000
       EOF
 
       echo "delay start of $$SERVER_INDEX second"
