@@ -3,6 +3,7 @@ name: Develop Test Image
 on:
   push:
     tags: main
+  workflow_dispatch:
 
 jobs:
   docker:

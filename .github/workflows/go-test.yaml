@@ -26,5 +26,5 @@ jobs:
     - name: Run tests
       run: go test -v ./...
 
-    - name: Test
+    - name: Generate Test document
       uses: robherley/go-test-action@v0
