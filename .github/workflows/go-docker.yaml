@@ -4,20 +4,37 @@ on:
   push:
     tags: main
   workflow_dispatch:
-
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository }}/snow-gossip:${{ github.sha }}
 jobs:
   docker:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - uses: docker/login-action@v1
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and Push Image
-        run: |
-          docker buildx build --push \
-            -t ghcr.io/${{ github.repository }}/snow-gossip:${{ github.sha }} \
-            .
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ env.IMAGE_NAME }}
+  
+      - name: Build and push Docker image for AMD64
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

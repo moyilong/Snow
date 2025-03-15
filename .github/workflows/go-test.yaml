@@ -4,6 +4,8 @@ name: Go Test
 
 on:
   push:
+    paths:
+      - "**.go"
     
 jobs:
   test:
