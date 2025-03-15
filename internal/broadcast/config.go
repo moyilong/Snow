@@ -2,12 +2,13 @@ package broadcast
 
 import (
 	"fmt"
-	"gopkg.in/yaml.v3"
 	"os"
 	"snow/tool"
 	"strconv"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 const TimeLen = 8
@@ -103,5 +104,5 @@ func (c *Config) GetReliableTimeOut() int64 {
 func (c *Config) GetServerIp(clientIp string) string {
 	split := strings.Split(clientIp, ":")
 	port, _ := strconv.Atoi(split[1])
-	return fmt.Sprintf("127.0.0.1:%d", port-c.ClientPortOffset)
+	return fmt.Sprintf("%s:%d", split[0], port-c.ClientPortOffset)
 }

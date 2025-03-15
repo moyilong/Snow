@@ -47,6 +47,7 @@ func main() {
 		if err != nil {
 			return
 		}
+		log.Println("adding server to list...")
 		serverList = append(serverList, server)
 	}
 	//模拟每隔1秒向所有客户端发送一条消息
@@ -54,7 +55,7 @@ func main() {
 		for i := 0; i < 50000000000000; i++ {
 
 			time.Sleep(2 * time.Second)
-			err := serverList[5].RegularMessage([]byte("hello from server!"), 0)
+			err := serverList[0].RegularMessage([]byte("hello from server!"), 0)
 			if err != nil {
 				log.Println("Error broadcasting message:", err)
 			}

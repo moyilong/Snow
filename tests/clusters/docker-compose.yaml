@@ -2,7 +2,7 @@
 name: Snow Cluster Test
 
 networks:
-  snow-cluster-test-nic:
+  test-nic:
     ipam:
       config:
         - subnet: "192.0.2.0/24"
@@ -12,13 +12,11 @@ x-snow-base: &snow-base
   image: snow-test-image
   entrypoint: bash -C /init.sh
   configs:
-    - source: snow-config
-      target: /config.yml
     - source: snow-initor
       target: /init.sh
 
 x-snow-env: &snow-env
-  SNOW_NODE_COUNT: ${SNOW_NODE_COUNT:-2}
+  SNOW_NODE_COUNT: ${SNOW_NODE_COUNT:-4}
   SNOW_INIT_PORT: ${SNOW_INIT_PORT:-5000}
   SNOW_CONFIG_FILE: /config.yml
 
@@ -29,47 +27,34 @@ services:
       <<: *snow-env
       INITIAL_ADDRESS: 192.0.2.101
       LOCAL_ADDRESS: 192.0.2.100
+      SERVER_INDEX: 1
     networks:
-      snow-cluster-test-nic:
+      test-nic:
         ipv4_address: 192.0.2.100
   
   snow-2:
     <<: *snow-base
     networks:
-      snow-cluster-test-nic:
+      test-nic:
         ipv4_address: 192.0.2.101
     environment:
       <<: *snow-env
       INITIAL_ADDRESS: 192.0.2.100
       LOCAL_ADDRESS: 192.0.2.101
+      SERVER_INDEX: 2
 
   snow-3:
     <<: *snow-base
     networks:
-      snow-cluster-test-nic:
+      test-nic:
         ipv4_address: 192.0.2.102
     environment:
       <<: *snow-env
       INITIAL_ADDRESS: 192.0.2.100
       LOCAL_ADDRESS: 192.0.2.102
+      SERVER_INDEX: 3
 
 configs:
-  snow-config:
-    content: |
-      Port: 5000
-      Ipv6: false
-      FanOut: 2
-      SyncSend: true
-      LocalAddress: ##LOCAL_ADDRESS##
-      Coloring: ${SNOW_COLORING:-false}
-      ClientPortOffset: 1000
-      ExpirationTime: 60s
-      PushPullInterval: 60s
-      TCPTimeout: 60s
-      InitalServer: ##INITIAL_ADDRESS##:5000
-      Test: true
-      DefaultAddress: 192.0.2.100:5000,192.0.2.101:5000,192.0.2.102:5000
-      
   snow-initor:
     content: |
       #!/bin/bash
@@ -78,6 +63,7 @@ configs:
         Port: 5000
         Ipv6: false
         FanOut: 2
+        Test: true
         SyncSend: true
         LocalAddress: $$LOCAL_ADDRESS
         Coloring: ${SNOW_COLORING:-false}
@@ -85,11 +71,11 @@ configs:
         ExpirationTime: 60s
         PushPullInterval: 60s
         TCPTimeout: 60s
-        InitalServer: $$INITIAL_ADDRESS:5000
-        Test: true
+        InitialServer: 192.0.2.100:5000
         DefaultAddress: 192.0.2.100:5000,192.0.2.101:5000,192.0.2.102:5000
       EOF
 
-      sleep 5
+      echo "delay start of $$SERVER_INDEX second"
+      sleep $$SERVER_INDEX
 
       /snow
