@@ -9,7 +9,9 @@ WORKDIR /src
 
 RUN go build -v -o /snow ./cmd
 
-FROM scratch
+FROM ubuntu:latest
+
+WORKDIR /
 
 COPY --from=build --chmod=0777 /snow /snow
 

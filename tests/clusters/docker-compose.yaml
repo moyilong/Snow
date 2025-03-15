@@ -1,0 +1,54 @@
+
+name: Snow Cluster Test
+
+networks:
+  snow-cluster-test-nic:
+    ipam:
+      config:
+        - subnet: "192.0.2.0/24"
+          gateway: 192.0.2.1
+
+x-snow-base: &snow-base
+  image: snow-test-image
+  configs:
+    - source: snow-config
+      target: /config.yml
+  environment:
+    SNOW_NODE_COUNT: ${SNOW_NODE_COUNT:-8}
+
+services:
+  snow-1:
+    <<: *snow-base
+    networks:
+      snow-cluster-test-nic:
+        ipv4_address: 192.0.2.100
+  
+  snow-2:
+    <<: *snow-base
+    networks:
+      snow-cluster-test-nic:
+        ipv4_address: 192.0.2.101
+
+  snow-3:
+    <<: *snow-base
+    networks:
+      snow-cluster-test-nic:
+        ipv4_address: 192.0.2.102
+
+configs:
+  snow-config:
+    content: |
+      Port: 5000
+      IPv6: false
+      FanOut: 2
+      LocalAddress: 127.0.0.1
+      Coloring: ${SNOW_COLORING:-false}
+      ClientPortOffset: 1000
+      ExpirationTime: 60s
+      PushPullInterval: 60s
+      TCPTimeout: 60s
+      InitalServer: 127.0.0.1:50000
+      Test: true
+      DefaultAddress: 192.0.2.100:5000,192.0.2.101:5000,192.0.2.102:5000
+      
+

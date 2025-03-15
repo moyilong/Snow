@@ -3,14 +3,32 @@ package main
 import (
 	"fmt"
 	"log"
+	"os"
 	"snow/internal/broadcast"
+	"strconv"
 	"time"
 )
 
+func getIntFromEnv(envName string, defValue int) int {
+	envVal := os.Getenv(envName)
+	if envVal == "" {
+		return defValue
+	} else {
+		num, err := strconv.Atoi(envVal)
+		if err != nil {
+			return defValue
+		} else {
+			return num
+		}
+
+	}
+}
+
 func main() {
-	configPath := "E:\\code\\go\\Snow\\config\\config.yml"
-	n := 200
-	initPort := 50000
+	configPath := "config.yml"
+
+	n := getIntFromEnv("SNOW_NODE_COUNT", 200)
+	initPort := getIntFromEnv("SNOW_INIT_PORT", 5000)
 	serverList := make([]*broadcast.Server, 0)
 	//serversAddresses := initAddress(n)
 	action := createAction()
