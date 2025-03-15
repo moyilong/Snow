@@ -1,0 +1,22 @@
+name: Develop Test Image
+
+on:
+  push:
+    tags: main
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: docker/login-action@v1
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and Push Image
+        run: |
+          docker buildx build --push \
+            -t ghcr.io/${{ github.repository }}/snow-gossip:${{ github.sha }} \
+            .
