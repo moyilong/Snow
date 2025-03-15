@@ -1,11 +1,13 @@
 name: Develop Test Image
 
 on:
+  workflow_dispatch:
   push:
     tags: main
-  workflow_dispatch:
+  
 env:
   IMAGE_NAME: ghcr.io/${{ github.repository }}/snow-gossip:${{ github.sha }}
+  
 jobs:
   docker:
     runs-on: ubuntu-latest
@@ -20,7 +22,6 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
 
       - name: Extract metadata
         id: meta
