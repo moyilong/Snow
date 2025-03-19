@@ -11,10 +11,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const TimeLen = 8
-const TagLen = 2
-const HashLen = 32
-
 type Config struct {
 	Port             int           `yaml:"Port"`
 	Ipv6             bool          `yaml:"Ipv6"`
@@ -31,33 +27,9 @@ type Config struct {
 	InitialServer    string        `yaml:"InitialServer"`
 	DefaultServer    []string
 	DefaultAddress   string `yaml:"DefaultAddress"`
+	RemoteHttp       string `yaml:"RemoteHttp"`
 }
 
-// CutBytes 这个方法会留下时间戳
-func (c *Config) CutBytes(bytes []byte) []byte {
-	return bytes[c.Placeholder()-8:]
-}
-
-func (c *Config) CutTimestamp(bytes []byte) []byte {
-	return bytes[8:]
-}
-
-func (c *Config) Placeholder() int {
-	//ipv4/6的地址和1个tag，加上8个byte的时间戳
-	if c.Ipv6 {
-		return 1 + 1 + 18 + 18 + 8
-	} else {
-		return 1 + 1 + 6 + 6 + 8
-	}
-}
-
-func (c *Config) IpLen() int {
-	if c.Ipv6 {
-		return 18
-	} else {
-		return 6
-	}
-}
 func (c *Config) IPBytes() []byte {
 	if !c.Ipv6 {
 		return tool.IPv4To6Bytes(c.ServerAddress)
@@ -75,13 +47,15 @@ func NewConfig(filename string, opts ...ConfigOption) (*Config, error) {
 	if err != nil {
 		panic(err)
 	}
+
+	config.DefaultServer = strings.Split(config.DefaultAddress, ",")
+
+	tool.RemoteHttp = config.RemoteHttp
 	for _, action := range opts {
 		action(config)
 	}
-	config.DefaultServer = strings.Split(config.DefaultAddress, ",")
 	config.ClientAddress = fmt.Sprintf("%s:%d", config.LocalAddress, config.Port+config.ClientPortOffset)
 	config.ServerAddress = fmt.Sprintf("%s:%d", config.LocalAddress, config.Port)
-
 	return config, nil
 }
 

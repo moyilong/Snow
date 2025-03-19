@@ -3,11 +3,12 @@ package broadcast
 import (
 	"bufio"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
-	"snow/internal/broadcast/dialer"
+	"snow/internal/dialer"
 	"snow/internal/membership"
 	"snow/internal/state"
 	"snow/tool"
@@ -21,12 +22,14 @@ type SendData struct {
 	Msg     []byte
 }
 
-var stopCh = make(chan struct{})
-var sendChan = make(chan *SendData)
+//var stopCh = make(chan struct{})
+//var sendChan = make(chan *SendData)
+//var clientWorkerPool = tool.NewWorkerPool(1)
 
 // NewServer 创建并启动一个 TCP 服务器
 func NewServer(config *Config, action Action) (*Server, error) {
 	listener, err := net.Listen("tcp", config.ServerAddress)
+
 	if err != nil {
 		return nil, err
 	}
@@ -45,16 +48,20 @@ func NewServer(config *Config, action Action) (*Server, error) {
 			State:           state.NewTimeoutMap(),
 			ReliableTimeout: make(map[string]*state.ReliableInfo),
 		},
-		Action:   action,
-		client:   dialer.Dialer(clientAddress, config.TCPTimeout),
-		isClosed: false,
+		Action:           action,
+		client:           dialer.Dialer(clientAddress, config.TCPTimeout),
+		isClosed:         false,
+		StopCh:           make(chan struct{}),
+		sendChan:         make(chan *SendData),
+		clientWorkerPool: tool.NewWorkerPool(1),
 	}
 
+	server.H = server
 	server.Member.FindOrInsert(config.IPBytes())
 	go server.startAcceptingConnections() // 启动接受连接的协程
-	// 主动连接到其他客户端
-	//for _, addr := range clientList {
-	//	go server.connectToClient(addr)
+
+	//for _, addr := range config.DefaultServer {
+	//	server.Member.AddMember(tool.IPv4To6Bytes(addr))
 	//}
 	server.schedule()
 	server.ApplyJoin(config.InitialServer)
@@ -66,7 +73,7 @@ func NewServer(config *Config, action Action) (*Server, error) {
 func (s *Server) schedule() {
 	// Create the stop tick channel, a blocking channel. We close this
 	// when we should stop the tickers.
-	go s.pushTrigger(stopCh)
+	go s.pushTrigger(s.StopCh)
 	go s.Sender()
 
 }
@@ -75,7 +82,7 @@ func (s *Server) schedule() {
 func (s *Server) startAcceptingConnections() {
 	for {
 		select {
-		case <-stopCh:
+		case <-s.StopCh:
 			return
 		default:
 		}
@@ -85,6 +92,7 @@ func (s *Server) startAcceptingConnections() {
 			log.Println("Error accepting connection:", err)
 			continue
 		}
+		log.Printf("get connect from %s", conn.RemoteAddr().String())
 		tcpConn := conn.(*net.TCPConn)
 		tcpConn.SetLinger(0)
 		conn = tcpConn
@@ -92,9 +100,10 @@ func (s *Server) startAcceptingConnections() {
 		metaData := membership.NewEmptyMetaData()
 		metaData.SetServer(conn)
 		s.Member.PutMemberIfNil(serverIp, metaData)
+
 		// todo 后期优化成只能保持k个连接
-		//s.Member.AddNode(conn, false)
 		go s.handleConnection(conn, false) // 处理客户端连接
+
 	}
 }
 
@@ -109,24 +118,27 @@ func (s *Server) handleConnection(conn net.Conn, isServer bool) {
 		s.Member.RemoveMember(tool.IPv4To6Bytes(addr))
 		s.Member.Unlock()
 	}()
-
 	reader := bufio.NewReader(conn)
+
 	for {
 		select {
-		case <-stopCh:
+		case <-s.StopCh:
 			return
 		default:
 		}
 
 		// 读取消息头 (4字节表示消息长度)
+
 		header := make([]byte, 4)
 		_, err := io.ReadFull(reader, header)
 		if err != nil {
+			fmt.Println(errors.Is(err, io.EOF))
 			log.Printf("Read header error from %v: %v\n", conn.RemoteAddr(), err)
 			if err == io.EOF {
 				fmt.Println("Normal EOF: connection closed by client")
 			}
 			fmt.Println(conn.RemoteAddr().String())
+			s.Member.RemoveMember(tool.IPv4To6Bytes(conn.RemoteAddr().String()))
 			return
 		}
 
@@ -143,54 +155,32 @@ func (s *Server) handleConnection(conn net.Conn, isServer bool) {
 			log.Printf("Read body error from %v: %v\n", conn.RemoteAddr(), err)
 			return
 		}
+		s.H.Hand(msg, conn)
 
-		handler(msg, s, conn)
-
-		// 打印接收到的消息
-		//fmt.Printf("Received message from %v: %s\n", conn.RemoteAddr(), string(body))
-
-		//// 回复客户端
-		//response := "Message received"
-		//responseBytes := []byte(response)
-		//
-		//length := uint32(len(responseBytes))
-		//binary.BigEndian.PutUint32(header, length)
-		//
-		//conn.Write(header)
-		//conn.Write(responseBytes)
 	}
 }
 
-// connectToClient 主动连接到其他客户端
-func (s *Server) connectToClient(addr string) error {
-	conn, err := s.connectToPeer(addr)
-	if err != nil {
-		log.Println("Error connection:", err)
-		return err
-	}
-	go s.handleConnection(conn, true) // 处理客户端连接
-	return nil
-}
 func (s *Server) connectToPeer(addr string) (net.Conn, error) {
-	if s.Config.Test {
-		s.Member.Lock()
-		defer s.Member.Unlock()
-		s.Member.PutMemberIfNil(addr, membership.NewEmptyMetaData())
-		s.Member.FindOrInsert(tool.IPv4To6Bytes(addr))
+	s.Member.Lock()
+	defer s.Member.Unlock()
+	member := s.Member.GetMember(addr)
+	if member != nil && member.GetClient() != nil {
+		return member.GetClient(), nil
 	}
-
 	// 赋值给 Dialer 的 LocalAddr
 	conn, err := s.client.Dial("tcp", addr)
 	if err != nil {
 		log.Printf("Failed to connect to %s: %v\n", addr, err)
 		return nil, err
 	}
-
-	log.Printf("Connected to %s\n", addr)
-	s.Member.AddNode(conn, true)
+	log.Printf("%sConnected to %s\n", s.Config.ServerAddress, addr)
+	metaData := membership.NewEmptyMetaData()
+	metaData.SetClient(conn)
+	s.Member.PutMemberIfNil(addr, metaData)
 	return conn, nil
 }
 func (s *Server) SendMessage(ip string, payload []byte, msg []byte) {
+
 	if s.isClosed {
 		return
 	}
@@ -198,10 +188,9 @@ func (s *Server) SendMessage(ip string, payload []byte, msg []byte) {
 	var conn net.Conn
 	var err error
 	if metaData == nil {
-		//建立临时连接
-		conn, err = s.client.Dial("tcp", ip)
+		conn, err = s.connectToPeer(ip)
 		if err != nil {
-			log.Printf("Failed to connect to %s: %v\n", ip, err)
+			log.Println(s.Config.ServerAddress, "can't connect to ", ip)
 			return
 		}
 	} else {
@@ -214,10 +203,6 @@ func (s *Server) SendMessage(ip string, payload []byte, msg []byte) {
 			log.Println(s.Config.ServerAddress, "can't connect to ", ip)
 			return
 		} else {
-			metaData = membership.NewEmptyMetaData()
-			metaData.SetServer(conn)
-			metaData.SetClient(newConn)
-			s.Member.PutMemberIfNil(ip, metaData)
 			conn = newConn
 		}
 	}
@@ -227,69 +212,29 @@ func (s *Server) SendMessage(ip string, payload []byte, msg []byte) {
 	header := make([]byte, 4)
 	binary.BigEndian.PutUint32(header, length)
 
-	//go func(c net.Conn, config *Config) {
-	//	//写入消息包的大小
-	//	_, err := c.Write(header)
-	//	if err != nil {
-	//		s.ReportLeave(tool.IPv4To6Bytes(c.RemoteAddr().String()))
-	//		log.Printf("Error sending header to %v: %v", c.RemoteAddr(), err)
-	//		return
-	//	}
-	//	_, err = c.Write(payload)
-	//	if err != nil {
-	//		s.ReportLeave(tool.IPv4To6Bytes(c.RemoteAddr().String()))
-	//		log.Printf("Error sending header to %v: %v", c.RemoteAddr(), err)
-	//		return
-	//	}
-	//	_, err = c.Write(msg)
-	//	if err != nil {
-	//		s.ReportLeave(tool.IPv4To6Bytes(c.RemoteAddr().String()))
-	//		log.Printf("Error sending header to %v: %v", c.RemoteAddr(), err)
-	//		return
-	//	}
-	//	if s.Config.Test {
-	//		tool.SendHttp(s.Config.ServerAddress, ip, msg)
-	//	}
-	//}(conn, s.Config)
-
 	data := &SendData{
 		Conn:    conn,
 		Header:  header,
 		Payload: payload,
 		Msg:     msg,
 	}
-	sendChan <- data
+	s.sendChan <- data
 }
 
 // 这个方法只能用来回复消息
-func replayMessage(conn net.Conn, config *Config, msg []byte) {
+func (s *Server) replayMessage(conn net.Conn, config *Config, msg []byte) {
 	// 创建消息头，存储消息长度 (4字节大端序)
 	length := uint32(len(msg))
 	header := make([]byte, 4)
 	binary.BigEndian.PutUint32(header, length)
-	//go func(c net.Conn, config *Config) {
-	//	//写入消息包的大小
-	//	_, err := c.Write(header)
-	//	if err != nil {
-	//		log.Printf("Error sending header to %v: %v", c.RemoteAddr(), err)
-	//		return
-	//	}
-	//	_, err = c.Write(msg)
-	//	if err != nil {
-	//		log.Printf("Error sending header to %v: %v", c.RemoteAddr(), err)
-	//		return
-	//	}
-	//	if config.Test {
-	//		tool.SendHttp(config.ServerAddress, conn.RemoteAddr().String(), msg)
-	//	}
-	//}(conn, config)
+	fmt.Println(conn.RemoteAddr().String())
 	data := &SendData{
 		Conn:    conn,
 		Header:  header,
 		Payload: []byte{},
 		Msg:     msg,
 	}
-	sendChan <- data
+	s.sendChan <- data
 }
 
 // Close 关闭服务器
@@ -299,13 +244,14 @@ func (s *Server) Close() {
 	for _, v := range s.Member.MetaData {
 
 		v.GetClient().Close()
+		v.GetServer().Close()
 	}
 
 	s.Member.Unlock()
 }
 
 func (s *Server) Sender() {
-	for data := range sendChan {
+	for data := range s.sendChan {
 		_, err := data.Conn.Write(data.Header)
 		if err != nil {
 			s.ReportLeave(tool.IPv4To6Bytes(data.Conn.RemoteAddr().String()))
@@ -325,7 +271,8 @@ func (s *Server) Sender() {
 			continue
 		}
 		if s.Config.Test {
-			tool.SendHttp(s.Config.ServerAddress, data.Conn.RemoteAddr().String(), data.Msg)
+			bytes := append(data.Payload, data.Msg...)
+			tool.SendHttp(s.Config.ServerAddress, data.Conn.RemoteAddr().String(), bytes, s.Config.FanOut)
 		}
 	}
 }

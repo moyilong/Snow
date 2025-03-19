@@ -7,8 +7,7 @@ import (
 	"math"
 	"math/rand"
 	"net"
-	"net/http"
-	"net/url"
+	. "snow/common"
 	"strconv"
 	"time"
 )
@@ -20,33 +19,16 @@ import (
 // while the 65th will triple it.
 const pushScaleThreshold = 32
 
-func SendHttp(from string, target string, data []byte) {
-	values := url.Values{}
-	values.Add("From", from)
-	values.Add("Target", target)
-	values.Add("Size", fmt.Sprintf("%d", len(data)))
-	//if fanOut {
-	//	values.Add("FanOut", "true")
-	//} else {
-	//	values.Add("FanOut", "false")
-	//
-	//}
-	// 构建完整的URL，包括查询参数
-	baseURL := "http://127.0.0.1:8111/putRing"
-	fullURL := fmt.Sprintf("%s?%s", baseURL, values.Encode())
-
-	// 发送HTTP GET请求
-	http.Get(fullURL)
-}
-
 // KRandomNodes 定义一个函数，生成指定范围内的随机数，如果取到特定值则重新生成
-func KRandomNodes(min, max, exclude int, k int) []int {
+func KRandomNodes(min int, max int, excludes []int, k int) []int {
 	res := make([]int, 0)
-	if max-min+1 <= k+1 {
+	if max-min+1 <= k+len(excludes) {
 		for ; min <= max; min++ {
-			if min != exclude {
+			if !contains(min, excludes) {
 				res = append(res, min)
+
 			}
+
 		}
 		return res
 	}
@@ -56,32 +38,39 @@ START:
 	for len(res) < k {
 		// 生成 [min, max] 范围内的随机数
 		randomNum := r.Intn(max-min+1) + min
-		for i := 0; i < len(res); i++ {
-			if randomNum == res[i] {
-				goto START
-			}
+		if contains(randomNum, res) {
+			goto START
+
 		}
 		// 如果生成的随机数不等于 exclude，则返回
-		if randomNum != exclude {
+		if !contains(randomNum, excludes) {
 			res = append(res, randomNum)
+
 		}
 		// 否则继续循环，重新生成
 	}
 	return res
 }
+func contains(target int, nums []int) bool {
+	for _, v := range nums {
+		if v == target {
+			return true
+		}
+	}
+	return false
+}
 
+func HashByte(msg []byte) []byte {
+	sum256 := blake3.Sum256(msg)
+	return sum256[:]
+
+}
 func Hash(msg []byte) string {
-	sum256 := blake3.Sum256([]byte(msg))
+	sum256 := blake3.Sum256(msg)
 	sum := string(sum256[:])
 	return sum
 }
 
-//	func TimeBytes() []byte {
-//		unix := time.Now().Unix()
-//		timestamp := make([]byte, 8)
-//		binary.BigEndian.PutUint64(timestamp, uint64(unix))
-//		return timestamp
-//	}
 func BytesToTime(data []byte) int64 {
 	return int64(binary.BigEndian.Uint64(data))
 }
@@ -155,4 +144,36 @@ func CopyMsg(msg []byte) []byte {
 	res := make([]byte, len(msg))
 	copy(res, msg)
 	return res
+}
+func RandInt(min, max int) int {
+	if min >= max {
+		panic("wrong starting value")
+	}
+	return rand.Intn(max-min) + min
+}
+func PackTagToHead(msgType MsgType, changeType MsgAction, msg []byte) []byte {
+	data := make([]byte, len(msg)+TimeLen+TagLen)
+	data[0] = msgType
+	data[1] = changeType
+	timeBytes := RandomNumber()
+	copy(data[TagLen:], timeBytes)
+	copy(data[TimeLen+TagLen:], msg)
+	return data
+}
+
+func PackTag(msgType MsgType, changeType MsgAction) []byte {
+	data := make([]byte, TimeLen+TagLen)
+	data[0] = msgType
+	data[1] = changeType
+	timeBytes := RandomNumber()
+	copy(data[TagLen:], timeBytes)
+	return data
+}
+
+func CutBytes(bytes []byte) []byte {
+	return bytes[Placeholder-TimeLen:]
+}
+
+func CutTimestamp(bytes []byte) []byte {
+	return bytes[TimeLen:]
 }

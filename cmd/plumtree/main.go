@@ -2,38 +2,16 @@ package main
 
 import (
 	"fmt"
-	"log"
-	"os"
 	"snow/internal/broadcast"
-	"strconv"
+	"snow/internal/plumtree"
 	"time"
 )
 
-func getIntFromEnv(envName string, defValue int) int {
-	envVal := os.Getenv(envName)
-	if envVal == "" {
-		return defValue
-	} else {
-		num, err := strconv.Atoi(envVal)
-		if err != nil {
-			return defValue
-		} else {
-			return num
-		}
-
-	}
-}
-
 func main() {
-	configPath := os.Getenv("SNOW_CONFIG_FILE")
-
-	if configPath == "" {
-		configPath = "config.yml"
-	}
-
-	n := getIntFromEnv("SNOW_NODE_COUNT", 200)
-	initPort := getIntFromEnv("SNOW_INIT_PORT", 50000)
-	serverList := make([]*broadcast.Server, 0)
+	configPath := "C:\\code\\go\\snow\\config\\config.yml"
+	n := 15
+	initPort := 40000
+	serverList := make([]*plumtree.Server, 0)
 	//serversAddresses := initAddress(n, initPort)
 	action := createAction()
 
@@ -44,22 +22,18 @@ func main() {
 		}
 		config, err := broadcast.NewConfig(configPath, f)
 		//time.Sleep(50 * time.Millisecond)
-		server, err := broadcast.NewServer(config, action)
+		server, err := plumtree.NewServer(config, action)
 		if err != nil {
 			return
 		}
-		log.Println("adding server to list...")
 		serverList = append(serverList, server)
 	}
 	//模拟每隔1秒向所有客户端发送一条消息
 	go func() {
 		for i := 0; i < 50000000000000; i++ {
 			time.Sleep(5 * time.Second)
-			err := serverList[0].RegularMessage([]byte("hello from server!"), 0)
-			if err != nil {
-				log.Println("Error broadcasting message:", err)
-			}
-			//time.Sleep(2 * time.Second)
+			serverList[0].PlumTreeBroadcast([]byte("hello from server!"), 0)
+
 		}
 	}()
 	// 主线程保持运行

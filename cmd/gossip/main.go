@@ -22,6 +22,54 @@ func main() {
 	select {}
 }
 
+func main2() {
+	// 指定本地地址
+	localAddr, err := net.ResolveTCPAddr("tcp", "127.0.0.1:9000")
+	if err != nil {
+		fmt.Println("解析本地地址失败:", err)
+		return
+	}
+
+	// 创建 Dialer，设置 Control 函数以允许端口复用
+	dialer := net.Dialer{
+		LocalAddr: localAddr,
+		Control: func(network, address string, c syscall.RawConn) error {
+			return c.Control(func(fd uintptr) {
+				//设置 SO_REUSEADDR
+				err := syscall.SetsockoptInt(syscall.Handle(fd), syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
+				if err != nil {
+					fmt.Println("设置 SO_REUSEADDR 失败:", err)
+				}
+
+			})
+		},
+	}
+	// 连接到第二个服务器
+	conn2, err := dialer.Dial("tcp", "127.0.0.1:9071")
+	tcpConn := conn2.(*net.TCPConn)
+	tcpConn.SetLinger(0)
+	if err != nil {
+		fmt.Println("连接失败:", err)
+		return
+	}
+	fmt.Println("连接成功:", conn2.LocalAddr())
+	conn2.Close()
+
+	// 增加延迟，确保端口资源释放
+	time.Sleep(1 * time.Second)
+
+	// 断开之后重连
+	conn2, err = dialer.Dial("tcp", "127.0.0.1:9071")
+	tcpConn = conn2.(*net.TCPConn)
+	tcpConn.SetLinger(0)
+	if err != nil {
+		fmt.Println("连接失败:", err)
+		return
+	}
+	fmt.Println("连接成功:", conn2.LocalAddr())
+	defer conn2.Close()
+}
+
 func s(port string) {
 	listener, err := net.Listen("tcp", port)
 	if err != nil {
@@ -39,60 +87,4 @@ func s(port string) {
 		}
 		go handleConnection(conn) // 使用 goroutine 处理每个客户端
 	}
-}
-
-func main2() {
-	// 指定本地地址
-	localAddr, err := net.ResolveTCPAddr("tcp", "127.0.0.1:9000")
-	if err != nil {
-		fmt.Println("解析本地地址失败:", err)
-		return
-	}
-
-	// 创建 Dialer，设置 Control 函数以允许端口复用
-	dialer := net.Dialer{
-		LocalAddr: localAddr,
-		Control: func(network, address string, c syscall.RawConn) error {
-			return c.Control(func(fd uintptr) {
-				// 设置 SO_REUSEADDR
-				//err := syscall.SetsockoptInt(syscall.Handle(fd), syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
-				//if err != nil {
-				//	fmt.Println("设置 SO_REUSEADDR 失败:", err)
-				//}
-				linger := syscall.Linger{
-					Onoff:  1,
-					Linger: 0,
-				}
-				err := syscall.SetsockoptLinger(syscall.Handle(fd), syscall.SOL_SOCKET, syscall.SO_REUSEADDR, &linger)
-				if err != nil {
-					fmt.Println("设置 SO_REUSEADDR 失败:", err)
-				}
-			})
-		},
-	}
-
-	// 连接到第二个服务器
-	conn2, err := dialer.Dial("tcp", "127.0.0.1:9071")
-	//tcpConn := conn2.(*net.TCPConn)
-	//tcpConn.SetLinger(0)
-	if err != nil {
-		fmt.Println("连接失败:", err)
-		return
-	}
-	fmt.Println("连接成功:", conn2.LocalAddr())
-	conn2.Close()
-
-	// 增加延迟，确保端口资源释放
-	time.Sleep(1 * time.Second)
-
-	// 断开之后重连
-	conn2, err = dialer.Dial("tcp", "127.0.0.1:9071")
-	//tcpConn = conn2.(*net.TCPConn)
-	//tcpConn.SetLinger(0)
-	if err != nil {
-		fmt.Println("连接失败:", err)
-		return
-	}
-	fmt.Println("连接成功:", conn2.LocalAddr())
-	defer conn2.Close()
 }

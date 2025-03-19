@@ -5,6 +5,7 @@ import (
 	"encoding/gob"
 	"fmt"
 	"net"
+	. "snow/common"
 	"snow/internal/membership"
 	"snow/internal/state"
 	"snow/tool"
@@ -12,13 +13,17 @@ import (
 
 // Server 定义服务器结构体
 type Server struct {
-	listener net.Listener
-	Config   *Config
-	Member   membership.MemberShipList
-	State    state.State
-	Action   Action
-	client   net.Dialer //客户端连接器
-	isClosed bool       //是否关闭了
+	listener         net.Listener
+	Config           *Config
+	Member           membership.MemberShipList
+	State            state.State
+	Action           Action
+	client           net.Dialer //客户端连接器
+	isClosed         bool       //是否关闭了
+	H                HandlerFunc
+	StopCh           chan struct{}
+	sendChan         chan *SendData
+	clientWorkerPool *tool.WorkerPool
 }
 
 type area struct {
@@ -64,12 +69,12 @@ func (s *Server) ReduceReliableTimeout(msg []byte, configAction *func(isConverge
 		}
 		newMsg := make([]byte, len(msg))
 		copy(newMsg, msg)
-		copy(newMsg[prefix:prefix+s.Config.IpLen()], s.Config.IPBytes())
+		copy(newMsg[prefix:prefix+IpLen], s.Config.IPBytes())
 		s.SendMessage(tool.ByteToIPv4Port(r.Ip), []byte{}, newMsg)
 		//断开连接
-		if msgAction == nodeLeave {
+		if msgAction == NodeLeave {
 
-			s.Member.RemoveMember(msg[len(msg)-s.Config.IpLen():])
+			s.Member.RemoveMember(msg[len(msg)-IpLen:])
 		}
 	}
 
@@ -86,7 +91,7 @@ func (a *Action) process(body []byte) bool {
 }
 
 func (s *Server) IsReceived(m []byte) bool {
-	return s.State.State.Add(m, s.Config.ExpirationTime)
+	return s.State.State.Add(m, "", s.Config.ExpirationTime)
 }
 
 func ObtainOnIPRing(current int, offset int, n int) int {
@@ -115,7 +120,7 @@ func (s *Server) NextHopMember(msgType MsgType, msgAction MsgAction, leftIP []by
 	//todo 这里可以优化读写锁
 	s.Member.Lock()
 	defer s.Member.Unlock()
-	coloring := msgType == coloringMsg
+	coloring := msgType == ColoringMsg
 	if s.Member.MemberLen() == 1 {
 		return make(map[string][]byte), nil
 	}
@@ -138,7 +143,6 @@ func (s *Server) NextHopMember(msgType MsgType, msgAction MsgAction, leftIP []by
 	next, areaLen := CreateSubTree(leftIndex, rightIndex, currentIndex, s.Member.MemberLen(), k, coloring)
 	//构建 secondary tree,注意这里的左边界和右边界要和根节点保持一致
 	if isRoot && areaLen > (1+k) && coloring {
-		//next = make([]*area, 0)
 		secondaryRoot := ObtainOnIPRing(currentIndex, -1, s.Member.MemberLen())
 		next = append(next, &area{left: leftIndex, right: rightIndex, current: secondaryRoot})
 	}
@@ -161,14 +165,10 @@ func (s *Server) NextHopMember(msgType MsgType, msgAction MsgAction, leftIP []by
 
 // 加入的时候要和一个节点进行交互，离开则不用
 func (s *Server) ApplyJoin(ip string) {
-	err := s.connectToClient(ip)
-	if err != nil {
-		return
-	}
 	if ip == s.Config.ServerAddress {
 		return
 	}
-	s.SendMessage(ip, []byte{}, PackTag(nodeChange, applyJoin))
+	s.SendMessage(ip, []byte{}, tool.PackTag(NodeChange, ApplyJoin))
 }
 
 func (s *Server) ApplyLeave() {
@@ -177,7 +177,7 @@ func (s *Server) ApplyLeave() {
 		if isSuccess {
 			//进行下线操作
 			stop := struct{}{}
-			stopCh <- stop
+			s.StopCh <- stop
 			s.Close()
 			s.Member.Clean()
 			s.isClosed = true
@@ -186,14 +186,16 @@ func (s *Server) ApplyLeave() {
 			s.ApplyLeave()
 		}
 	}
-	s.ReliableMessage(s.Config.IPBytes(), nodeLeave, &f)
+	s.ReliableMessage(s.Config.IPBytes(), NodeLeave, &f)
 }
 func (s *Server) ReportLeave(ip []byte) {
 	s.Member.RemoveMember(ip)
-	s.ColoringMessage(ip, reportLeave)
+	s.ColoringMessage(ip, ReportLeave)
 }
 
 func (s *Server) exportState() []byte {
+	s.Member.Lock()
+	defer s.Member.Unlock()
 	var buffer bytes.Buffer
 	encoder := gob.NewEncoder(&buffer)
 	err := encoder.Encode(s.Member.MetaData)
