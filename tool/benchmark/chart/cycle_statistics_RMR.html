@@ -8,7 +8,12 @@
 <body>
 <div id="echartsMain" style="width: 100%; height: 500px;"></div>
 </body>
-
+<style>
+    body {
+        margin: 0;
+        padding: 0;
+    }
+</style>
 </html>
 
 <script type="text/javascript">
@@ -20,12 +25,15 @@
         let RMR_8 = []
         let RMR_7 = []
         let RMR_11 = []
+        let RMR_12 = []
 
         let RMRSum_8 = 0
         let RMRSum_7 = 0
         let RMRSum_11 = 0
+        let RMRSum_12 = 0
 
         if (dataArr[8]) {
+            xData = []
             Object.entries(dataArr[8]).forEach(([k, v]) => {
                 xData.push(k)
                 RMR_8.push(v.RMR)
@@ -33,35 +41,52 @@
             });
         }
         if (dataArr[7]) {
+            xData = []
             Object.entries(dataArr[7]).forEach(([k, v]) => {
+                xData.push(k)
                 RMR_7.push(v.RMR)
                 RMRSum_7 += v.RMR
             });
         }
         if (dataArr[11]) {
+            xData = []
             Object.entries(dataArr[11]).forEach(([k, v]) => {
+                xData.push(k)
                 RMR_11.push(v.RMR)
                 RMRSum_11 += v.RMR
+            });
+        }
+        if (dataArr[12]) {
+            xData = []
+            Object.entries(dataArr[12]).forEach(([k, v]) => {
+                xData.push(k)
+                RMR_12.push(v.RMR)
+                RMRSum_12 += v.RMR
             });
         }
 
         var option = {
             title: [{
-                    text: 'RMR',
-                },
+                text: 'RMR',
+            },
                 {
-                    subtext: 'Regular Avg: ' + (RMRSum_8 / xData.length).toFixed(0),
+                    subtext: 'Snow-Standard Avg: ' + (RMRSum_8 / xData.length).toFixed(0),
                     left: '0%',
                     bottom: '0%'
                 }, {
                     subtext: 'Coloring Avg: ' + (RMRSum_7 / xData.length).toFixed(0),
-                    left: '15%',
+                    left: '25%',
                     bottom: '0%'
                 }, {
                     subtext: 'Gossip Avg: ' + (RMRSum_11 / xData.length).toFixed(0),
-                    left: '30%',
+                    left: '50%',
                     bottom: '0%'
-            }],
+                }, {
+                    subtext: 'Plumtree Avg: ' + (RMRSum_12 / xData.length).toFixed(0),
+                    left: '75%',
+                    bottom: '0%'
+                }
+            ],
             tooltip: {
                 trigger: 'axis'
             },
@@ -72,19 +97,18 @@
             },
             yAxis: {
                 type: 'value',
-                // min: "dataMin",
                 min: 0,
                 max: 'dataMax',
                 axisLabel: {
-                    formatter: value => value.toFixed(0) // 保留两位小数
+                    formatter: value => value.toFixed(0)
                 }
             },
             legend: {
-                data: ['Regular', 'Coloring', 'Gossip']
+                data: ['Snow-Standard', 'Coloring', 'Gossip', 'Plumtree']
             },
             series: [
                 {
-                    name: 'Regular',
+                    name: 'Snow-Standard',
                     type: 'line',
                     data: RMR_8
                 },
@@ -98,14 +122,21 @@
                     type: 'line',
                     data: RMR_11
                 },
+                {
+                    name: 'Plumtree',
+                    type: 'line',
+                    data: RMR_12
+                }
             ]
         };
         myChart.setOption(option);
     }
 
     async function getData() {
+        let search = window.location.search
+        let url = "http://localhost:8111/getCycleStatistics" + search
         let request = new XMLHttpRequest()
-        request.open("GET", "http://localhost:8111/getCycleStatistics")
+        request.open("GET", url)
         request.onreadystatechange = function () {
             if (request.readyState === 4 && request.status == 200) {
                 let response = JSON.parse(request.responseText)

@@ -1,6 +1,8 @@
 package main
 
-import "math"
+import (
+	"math"
+)
 
 type Message struct {
 	Id        string
@@ -11,9 +13,8 @@ type Message struct {
 	Primary   bool
 	MsgType   byte
 
-	Num       int `json:"Num"`
-	FanOut    int `json:"FanOut"`
-
+	Num    int `json:"Num"`
+	FanOut int `json:"FanOut"`
 }
 
 // 每个节点统计信息
@@ -34,7 +35,7 @@ type MessageCycle struct {
 	Id             string
 	BroadcastCount int
 	FlowSum        int
-	Reliability    int
+	Reliability    float64
 	LDT            int
 	RMR            float64
 	FlowInS        float64
@@ -47,34 +48,43 @@ func staticticsCycle(message []Message, nodeCount int) MessageCycle {
 	// cycle.BroadcastCount = len(v.getMessages())
 	// 广播产生的总流量
 	// cycle.FlowSum = v.totalSize
-	// 广播总时间
-	// cycle.LDT = v.endTime - v.startTime
+
+	// 过滤每个节点第一次收到消息的时间
+	timeSet := make(map[string]int)
+	for _, message := range message {
+		if _, e := timeSet[message.Target]; !e {
+			timeSet[message.Target] = message.Timestamp
+		}
+	}
 	startTime := math.MaxInt
 	endTime := math.MinInt
-	m := 0
-	for _, message := range message {
-		m += message.Size
-		if startTime > message.Timestamp {
-			startTime = message.Timestamp
+	for _, v := range timeSet {
+		if startTime > v {
+			startTime = v
 		}
-		if endTime < message.Timestamp {
-			endTime = message.Timestamp
+		if endTime < v {
+			endTime = v
 		}
 	}
 	cycle.LDT = endTime - startTime
 
+	m := 0
 	n := nodeCount
-	cycle.RMR = (float64(m) / (float64(n) - 1)) - 1
+	for _, message := range message {
+		m += message.Size
+		n = message.Num
+	}
+	cycle.RMR = (float64(m) / float64(n-1)) - 1
 
 	// 统计有多少节点收到消息
 	set := make(map[string]int)
 	for _, m := range message {
-		if _, e := set[m.From]; !e {
-			set[m.From] = 0
+		if _, e := set[m.Target]; !e {
+			set[m.Target] = 0
 		}
-		set[m.From]++
+		set[m.Target]++
 	}
-	cycle.Reliability = len(set)
+	cycle.Reliability = float64(len(set)) / float64(n-1)
 
 	// 统计节点的扇入扇出流量方差
 	nodeSet := make(map[string]*MessageNode)

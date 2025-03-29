@@ -14,30 +14,32 @@ func (s *Server) Hand(msg []byte, conn net.Conn) {
 	//消息要进行的动作
 	msgAction := msg[1]
 	NodeChanging(msg[1:], parentIP, s, conn)
+
 	switch msgType {
 	case RegularMsg:
 		body := tool.CutBytes(msg)
 		if !IsFirst(body, msgType, msgAction, s) {
 			return
 		}
-		if msgAction == NodeJoin {
-			//如果不存在
-			s.Member.AddMember(tool.CutTimestamp(body))
-		}
 		forward(msg, s, parentIP)
 	case ColoringMsg:
 		body := tool.CutBytes(msg)
-		if !IsFirst(body, msgType, msgAction, s) {
+
+		first := IsFirst(body, msgType, msgAction, s)
+		forward(msg, s, parentIP)
+		if !first {
 			return
 		}
 		if msgAction == ReportLeave {
-			s.Member.RemoveMember(tool.CutTimestamp(body))
+			s.Member.RemoveMember(tool.CutTimestamp(body), false)
 		}
-		forward(msg, s, parentIP)
 	case ReliableMsg:
 		body := tool.CutBytes(msg)
 		if !IsFirst(body, msgType, msgAction, s) {
 			return
+		}
+		if msgAction == NodeLeave {
+			s.Member.RemoveMember(msg[len(msg)-IpLen:], false)
 		}
 		//如果自己是叶子节点发送ack给父节点	并删除ack的map
 		forward(msg, s, parentIP)
@@ -92,6 +94,7 @@ func forward(msg []byte, s *Server, parentIp string) {
 	leftIP := msg[TagLen : IpLen+TagLen]
 	rightIP := msg[IpLen+TagLen : IpLen*2+TagLen]
 	isLeaf := bytes.Compare(leftIP, rightIP) == 0
+
 	if !isLeaf {
 		member, _ = s.NextHopMember(msgType, msgAction, leftIP, rightIP, false)
 	}
@@ -112,9 +115,10 @@ func forward(msg []byte, s *Server, parentIp string) {
 			newMsg = append(newMsg, s.Config.IPBytes()...)
 			//根节点ip
 			newMsg = append(newMsg, msg[len(msg)-IpLen:]...)
-			if msgAction == NodeLeave {
-				s.Member.RemoveMember(msg[len(msg)-IpLen:])
-			}
+			//if msgAction == NodeLeave {
+			//	s.Member.RemoveMember(msg[len(msg)-IpLen:], false)
+			//}
+
 			s.SendMessage(parentIp, []byte{}, newMsg)
 		} else {
 			//不是发送节点的化，不需要任何回调

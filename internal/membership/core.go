@@ -2,15 +2,18 @@ package membership
 
 import (
 	"net"
+	. "snow/common"
 	"snow/tool"
 	"sort"
 	"time"
 )
 
 type MetaData struct {
-	client  net.Conn
-	server  net.Conn
-	Version int
+	client     net.Conn
+	server     net.Conn
+	State      NodeState
+	UpdateTime int64
+	Version    int32 //现在的版本号没有实际的作用
 }
 
 type MemberShipList struct {
@@ -28,20 +31,20 @@ func (m *MemberShipList) Clean() {
 	m.MetaData = make(map[string]*MetaData)
 }
 
-func (m *MemberShipList) InitState(metaDataMap map[string]*MetaData, currentIp []byte) {
+func (m *MemberShipList) InitState(metaDataMap map[string]*MetaData) {
 	m.Lock()
 	defer m.Unlock()
-	keys := make([]string, 0, len(metaDataMap)) // 预分配容量以优化性能
-	for k := range metaDataMap {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
 	for k, v := range metaDataMap {
+		if v.State == NodeLeft || v.State == NodePrepare {
+			continue
+		}
 		node, ok := m.MetaData[k]
 		if ok {
-			if node.Version > v.Version {
+			if node.Version <= v.Version {
 				//所有的元数据都要写这里
 				node.Version = v.Version
+				node.State = v.State
+				node.UpdateTime = v.UpdateTime
 			}
 		} else {
 			m.MetaData[k] = v
@@ -67,6 +70,8 @@ func (m *MetaData) SetClient(client net.Conn) {
 }
 
 func (m *MemberShipList) MemberLen() int {
+	m.Lock()
+	defer m.Unlock()
 	return len(m.IPTable)
 }
 
@@ -89,10 +94,22 @@ func (m *MemberShipList) FindOrInsert(target []byte) (int, bool) {
 	copy(m.IPTable[index+1:], m.IPTable[index:])
 	m.IPTable[index] = append([]byte{}, target...) // 插入新元素
 
-	//fmt.Println("Inserted at index:", index)
-
 	return index, true
+}
 
+func (m *MemberShipList) Find(target []byte) int {
+	m.Lock()
+	defer m.Unlock()
+	// 使用二分查找定位目标位置
+	index := sort.Search(len(m.IPTable), func(i int) bool {
+		return BytesCompare(m.IPTable[i], target) >= 0
+	})
+
+	// 如果找到相等的元素，直接返回原数组和索引
+	if index < len(m.IPTable) && BytesCompare(m.IPTable[index], target) == 0 {
+		return index
+	}
+	return -1
 }
 
 // BytesCompare 比较两个 []byte 的大小
@@ -114,45 +131,57 @@ func BytesCompare(a, b []byte) int {
 
 func NewEmptyMetaData() *MetaData {
 	return &MetaData{
-		Version: 0,
-		client:  nil,
+		Version:    0,
+		UpdateTime: time.Now().Unix(),
+		client:     nil,
+		State:      NodePrepare,
 	}
 }
 
 // 和addNode的区别是不需要实际进行连接
-func (m *MemberShipList) AddMember(ip []byte) {
+func (m *MemberShipList) AddMember(ip []byte, state NodeState) {
 	m.Lock()
 	defer m.Unlock()
-	_, ok := m.MetaData[tool.ByteToIPv4Port(ip)]
+	metaData, ok := m.MetaData[tool.ByteToIPv4Port(ip)]
 	if !ok {
-		m.MetaData[tool.ByteToIPv4Port(ip)] = NewEmptyMetaData()
+		metadata := NewEmptyMetaData()
+		metadata.State = state
+		m.MetaData[tool.ByteToIPv4Port(ip)] = metadata
+	} else {
+		metaData.UpdateTime = time.Now().Unix()
 	}
 	m.FindOrInsert(ip)
 }
-func (m *MemberShipList) RemoveMember(ip []byte) {
+func (m *MemberShipList) RemoveMember(ip []byte, close bool) {
 	m.Lock()
 	defer m.Unlock()
 	address := tool.ByteToIPv4Port(ip)
 	data, ok := m.MetaData[address]
 	if ok {
-		if data.client != nil {
-			time.AfterFunc(2*time.Second, func() {
-				tcpConn := (data.client).(*net.TCPConn)
-				tcpConn.SetLinger(0)
-				tcpConn.Close()
-			})
+		if close {
+			if data.client != nil {
+				time.AfterFunc(3*time.Second, func() {
+					tcpConn := (data.client).(*net.TCPConn)
+					tcpConn.SetLinger(0)
+					tcpConn.Close()
+				})
+			}
+			if data.server != nil {
+				time.AfterFunc(3*time.Second, func() {
+					tcpConn := (data.server).(*net.TCPConn)
+					tcpConn.SetLinger(0)
+					tcpConn.Close()
+				})
+			}
+			//扇出后还是可能短暂的发送消息
+			delete(m.MetaData, tool.ByteToIPv4Port(ip))
 		}
-		if data.server != nil {
-			time.AfterFunc(2*time.Second, func() {
-				tcpConn := (data.server).(*net.TCPConn)
-				tcpConn.SetLinger(0)
-				tcpConn.Close()
-			})
-		}
-		delete(m.MetaData, tool.ByteToIPv4Port(ip))
+		data.UpdateTime = time.Now().Unix()
+		data.State = NodeLeft
 	}
 	idx, _ := m.FindOrInsert(ip)
 	//删除当前元素
+	//m.IPTable = tool.DeleteAtIndexes(m.IPTable, idx)
 	m.IPTable = append(m.IPTable[:idx], m.IPTable[idx+1:]...)
 }
 func (m *MemberShipList) GetMember(key string) *MetaData {
@@ -168,11 +197,11 @@ func (m *MemberShipList) PutMemberIfNil(key string, value *MetaData) {
 		m.MetaData[key] = value
 		return
 	}
-	if data.client == nil && value.client != nil {
+	if value.client != nil {
 		data.client = value.client
 	}
-	if data.server == nil && value.server != nil {
+	if value.server != nil {
 		data.server = value.server
 	}
-	m.FindOrInsert(tool.IPv4To6Bytes(key))
+	//m.FindOrInsert(tool.IPv4To6Bytes(key))
 }

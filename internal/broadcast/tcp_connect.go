@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"snow/common"
 	"snow/internal/dialer"
 	"snow/internal/membership"
 	"snow/internal/state"
@@ -58,13 +59,14 @@ func NewServer(config *Config, action Action) (*Server, error) {
 
 	server.H = server
 	server.Member.FindOrInsert(config.IPBytes())
+
+	for _, addr := range config.DefaultServer {
+		server.Member.AddMember(tool.IPv4To6Bytes(addr), common.NodeSurvival)
+	}
 	go server.startAcceptingConnections() // 启动接受连接的协程
 
-	//for _, addr := range config.DefaultServer {
-	//	server.Member.AddMember(tool.IPv4To6Bytes(addr))
-	//}
 	server.schedule()
-	server.ApplyJoin(config.InitialServer)
+	//server.ApplyJoin(config.InitialServer)
 	log.Printf("Server is running on port %d...\n\n", config.Port)
 	return server, nil
 
@@ -73,7 +75,7 @@ func NewServer(config *Config, action Action) (*Server, error) {
 func (s *Server) schedule() {
 	// Create the stop tick channel, a blocking channel. We close this
 	// when we should stop the tickers.
-	go s.pushTrigger(s.StopCh)
+	//go s.pushTrigger(s.StopCh)
 	go s.Sender()
 
 }
@@ -89,6 +91,10 @@ func (s *Server) startAcceptingConnections() {
 		//其实是由netpoller 来触发的
 		conn, err := s.listener.Accept()
 		if err != nil {
+			if opErr, ok := err.(*net.OpError); ok && opErr.Err.Error() == "use of closed network connection" {
+				log.Println("Listener closed, stopping connection acceptance.")
+				return
+			}
 			log.Println("Error accepting connection:", err)
 			continue
 		}
@@ -115,7 +121,7 @@ func (s *Server) handleConnection(conn net.Conn, isServer bool) {
 		if !isServer {
 			addr = s.Config.GetServerIp(addr)
 		}
-		s.Member.RemoveMember(tool.IPv4To6Bytes(addr))
+		s.Member.RemoveMember(tool.IPv4To6Bytes(addr), false)
 		s.Member.Unlock()
 	}()
 	reader := bufio.NewReader(conn)
@@ -138,7 +144,8 @@ func (s *Server) handleConnection(conn net.Conn, isServer bool) {
 				fmt.Println("Normal EOF: connection closed by client")
 			}
 			fmt.Println(conn.RemoteAddr().String())
-			s.Member.RemoveMember(tool.IPv4To6Bytes(conn.RemoteAddr().String()))
+			member := tool.IPv4To6Bytes(conn.RemoteAddr().String())
+			s.Member.RemoveMember(member, false)
 			return
 		}
 
@@ -180,10 +187,10 @@ func (s *Server) connectToPeer(addr string) (net.Conn, error) {
 	return conn, nil
 }
 func (s *Server) SendMessage(ip string, payload []byte, msg []byte) {
-
 	if s.isClosed {
 		return
 	}
+
 	metaData := s.Member.GetMember(ip)
 	var conn net.Conn
 	var err error
@@ -191,6 +198,7 @@ func (s *Server) SendMessage(ip string, payload []byte, msg []byte) {
 		conn, err = s.connectToPeer(ip)
 		if err != nil {
 			log.Println(s.Config.ServerAddress, "can't connect to ", ip)
+			log.Println(err)
 			return
 		}
 	} else {
@@ -239,14 +247,19 @@ func (s *Server) replayMessage(conn net.Conn, config *Config, msg []byte) {
 
 // Close 关闭服务器
 func (s *Server) Close() {
-	s.listener.Close()
 	s.Member.Lock()
 	for _, v := range s.Member.MetaData {
+		client := v.GetClient()
+		if client != nil {
+			client.Close()
 
-		v.GetClient().Close()
-		v.GetServer().Close()
+		}
+		server := v.GetServer()
+		if server != nil {
+			server.Close()
+		}
 	}
-
+	s.listener.Close()
 	s.Member.Unlock()
 }
 
@@ -270,7 +283,7 @@ func (s *Server) Sender() {
 			log.Printf("Error sending message to %v: %v", data.Conn.RemoteAddr(), err)
 			continue
 		}
-		if s.Config.Test {
+		if s.Config.Test && s.Config.Report {
 			bytes := append(data.Payload, data.Msg...)
 			tool.SendHttp(s.Config.ServerAddress, data.Conn.RemoteAddr().String(), bytes, s.Config.FanOut)
 		}

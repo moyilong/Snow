@@ -28,6 +28,7 @@ type Config struct {
 	DefaultServer    []string
 	DefaultAddress   string `yaml:"DefaultAddress"`
 	RemoteHttp       string `yaml:"RemoteHttp"`
+	Report           bool   `yaml:"Report"`
 }
 
 func (c *Config) IPBytes() []byte {
@@ -42,12 +43,8 @@ type ConfigOption func(c *Config)
 func NewConfig(filename string, opts ...ConfigOption) (*Config, error) {
 	config, err := LoadConfig(filename)
 	if err != nil {
-		return nil, err
-	}
-	if err != nil {
 		panic(err)
 	}
-
 	config.DefaultServer = strings.Split(config.DefaultAddress, ",")
 
 	tool.RemoteHttp = config.RemoteHttp

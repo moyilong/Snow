@@ -11,11 +11,13 @@ func CreateSubTree(left int, right int, current int, n int, k int, coloring bool
 	}
 	tree := make([]*area, 0)
 	//是否进行节点染色
+
 	if coloring {
 		tree = ColoringMultiwayTree(left, right, current, k)
 	} else {
 		tree = BalancedMultiwayTree(left, right, current, k)
 	}
+
 	areaLen := right - left + 1
 	//计算完把偏移设置为原位
 	for _, v := range tree {
@@ -36,7 +38,7 @@ func BalancedMultiwayTree(left int, right int, current int, k int) []*area {
 	if left > right {
 		return nil
 	} else if (AreaLen - 1) <= k {
-		for ; left < right; left++ {
+		for ; left <= right; left++ {
 			if left == current {
 				continue
 			}
@@ -92,12 +94,24 @@ func ColoringMultiwayTree(left int, right int, current int, k int) []*area {
 	if left > right {
 		return nil
 	} else if (AreaLen - 1) <= k {
-		for ; left < current; left++ {
-			areas = append(areas, &area{left: left, current: left, right: left})
-		}
-		for ; current < right; current++ {
-			current++
-			areas = append(areas, &area{left: current, current: current, right: current})
+		//for ; left < current; left++ {
+		//	areas = append(areas, &area{left: left, current: left, right: left})
+		//}
+		//for ; current < right; current++ {
+		//	current++
+		//	areas = append(areas, &area{left: current, current: current, right: current})
+		//}
+		//return areas
+		for ; left <= right; left++ {
+			if left == current {
+				continue
+			}
+			//只有这一个节点了
+			areas = append(areas, &area{
+				current: left,
+				left:    left,
+				right:   left,
+			})
 		}
 		return areas
 	}
@@ -107,6 +121,9 @@ func ColoringMultiwayTree(left int, right int, current int, k int) []*area {
 	leftRemain := (current - left) % (k / 2)
 	previousScope := left
 	for i := 0; i < k/2; i++ {
+		if previousScope == current {
+			continue
+		}
 		//将多余的区域从左边开始均分给每一个节点
 		currentArea := leftArea
 		if leftRemain > 0 {
@@ -137,7 +154,9 @@ func ColoringMultiwayTree(left int, right int, current int, k int) []*area {
 	rightArea := (right - current) / (k / 2)
 	rightRemain := (right - current) % (k / 2)
 	for i := 0; i < k/2; i++ {
-
+		if previousScope > right {
+			continue
+		}
 		//将多余的区域从左边开始均分给每一个节点
 		currentArea := rightArea
 		if rightRemain > 0 {

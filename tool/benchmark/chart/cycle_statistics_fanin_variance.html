@@ -26,6 +26,7 @@
         let FlowInSSum_11 = 0
 
         if (dataArr[8]) {
+            xData = []
             Object.entries(dataArr[8]).forEach(([k, v]) => {
                 xData.push(k)
                 FlowInS_8.push(v.FlowInS)
@@ -33,13 +34,17 @@
             });
         }
         if (dataArr[7]) {
+            xData = []
             Object.entries(dataArr[7]).forEach(([k, v]) => {
+                xData.push(k)
                 FlowInS_7.push(v.FlowInS)
                 FlowInSSum_7 += v.FlowInS
             });
         }
         if (dataArr[11]) {
+            xData = []
             Object.entries(dataArr[11]).forEach(([k, v]) => {
+                xData.push(k)
                 FlowInS_11.push(v.FlowInS)
                 FlowInSSum_11 += v.FlowInS
             });
@@ -103,8 +108,10 @@
     }
 
     async function getData() {
+        let search = window.location.search
+        let url = "http://localhost:8111/getCycleStatistics" + search
         let request = new XMLHttpRequest()
-        request.open("GET", "http://localhost:8111/getCycleStatistics")
+        request.open("GET", url)
         request.onreadystatechange = function () {
             if (request.readyState === 4 && request.status == 200) {
                 let response = JSON.parse(request.responseText)

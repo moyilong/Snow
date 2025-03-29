@@ -6,6 +6,9 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"os"
+	. "snow/common"
+	"snow/tool"
 	"strings"
 	"sync"
 	"time"
@@ -34,21 +37,25 @@ func getMessageId(m Message) string {
 // 接收节点广播的消息
 func putRing(w http.ResponseWriter, r *http.Request) {
 	decoder := schema.NewDecoder()
-	message :=
-		Message{}
+	message := Message{}
 	err := decoder.Decode(&message, r.URL.Query())
 	if err != nil {
 		log.Println(err)
 		return
 	}
+	// 类型15会生成一堆id，暂时排除影响
+	if message.MsgType == 15 {
+		return
+	}
 	fmt.Println(message)
 	message.Timestamp = int(time.Now().UnixMilli())
 	message.Id = getMessageId(message)
-
+	rm.Lock()
 	if _, exisit := cacheMap[message.Id]; !exisit {
 		cacheMap[message.Id] = CreateMessageCache()
 	}
 	cacheMap[message.Id].put(message)
+	rm.Unlock()
 }
 
 // 消息传递路径
@@ -170,21 +177,64 @@ func getNodeStatistics(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(builder.String()))
 }
+func lack(w http.ResponseWriter, r *http.Request) {
+	rm.RLock()
+	arr := make([][]string, 0)
+	for _, v := range cacheMap {
+		flag := false
+		strArr := make([]string, 0)
+		for i := 1; i < 300; i++ {
+			strArr = append(strArr, fmt.Sprintf("%s%d", "127.0.0.1:", i+40000))
+		}
+		for _, msg := range v.messages {
+			if msg.MsgType == RegularMsg {
+				flag = true
+			}
+			strArr = tool.RemoveElement(strArr, msg.Target)
+		}
+		if flag {
+			arr = append(arr, strArr)
+		}
+	}
+	marshal, _ := json.Marshal(arr)
+	rm.RUnlock()
+	w.Write(marshal)
+}
 
 func getCycleStatistics(w http.ResponseWriter, r *http.Request) {
+	rm.RLock()
+	defer rm.RUnlock()
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-
+	decoder := schema.NewDecoder()
+	message := Message{}
+	err := decoder.Decode(&message, r.URL.Query())
+	if err != nil {
+		log.Println(err)
+		return
+	}
 	// 统计每个轮次的消息信息
-	cycleTypeMap := make(map[byte]map[string]MessageCycle)
+	cycleTypeMap := make(map[byte]map[string]*MessageCycle)
 	for msgType, _ := range msgIdMap {
-		cycleMap := make(map[string]MessageCycle)
+		cycleMap := make(map[string]*MessageCycle)
 		for k, v := range cacheMap {
-			messageGroup := v.getMessagesByGroup(msgType)
+			messageGroup := v.getMessagesByGroup(msgType, message)
 			nodeCount := len(v.getNodes())
-			cycle := staticticsCycle(messageGroup, nodeCount)
-			cycleMap[k] = cycle
+			if len(messageGroup) > 0 {
+				cycle := staticticsCycle(messageGroup, nodeCount)
+				cycleMap[k] = &cycle
+			}
 		}
 		cycleTypeMap[msgType] = cycleMap
+	}
+	for b, m := range cycleTypeMap {
+		if b == Graft || b == LazyPush {
+			for s := range m {
+				msg := cycleTypeMap[EagerPush][s]
+				if msg != nil {
+					msg.RMR = msg.RMR + m[s].RMR
+				}
+			}
+		}
 	}
 
 	var builder strings.Builder
@@ -193,6 +243,65 @@ func getCycleStatistics(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(builder.String()))
 }
+
+func exportDataset(w http.ResponseWriter, r *http.Request) {
+	dataSet := make(map[string][]Message)
+	for k, v := range cacheMap {
+		dataSet[k] = v.getMessages()
+	}
+
+	if _, err := os.Stat("./dataset"); os.IsNotExist(err) {
+		err := os.MkdirAll("./dataset", os.ModePerm)
+		if err != nil {
+			fmt.Printf("创建文件夹失败: %v\n", err)
+			return
+		}
+	}
+
+	data, err := json.Marshal(dataSet)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	err = os.WriteFile("./dataset/cacheMap.json", data, 0644)
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	data, err = json.Marshal(msgIdMap)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	err = os.WriteFile("./dataset/msgIdMap.json", data, 0644)
+	if err != nil {
+		log.Fatalln(err)
+	}
+}
+
+func loadDataset(w http.ResponseWriter, r *http.Request) {
+	byteValue, err := os.ReadFile("./dataset/cacheMap.json")
+	if err != nil {
+		log.Fatalln(err)
+	}
+	dataSet := make(map[string][]Message)
+	err = json.Unmarshal(byteValue, &dataSet)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	for k, v := range dataSet {
+		cacheMap[k] = new(MessageCache)
+		cacheMap[k].messages = v
+	}
+
+	byteValue, err = os.ReadFile("./dataset/cacheMap.json")
+	if err != nil {
+		log.Fatalln(err)
+	}
+	err = json.Unmarshal(byteValue, &msgIdMap)
+	if err != nil {
+		log.Fatalln(err)
+	}
+}
+
 func CreateWeb() {
 	cacheMap = make(map[string]*MessageCache)
 	msgIdMap = make(map[byte]map[string]int)
@@ -205,6 +314,14 @@ func CreateWeb() {
 	http.HandleFunc("/getAllNode", getAllNode)
 	http.HandleFunc("/getNodeStatistics", getNodeStatistics)
 	http.HandleFunc("/getCycleStatistics", getCycleStatistics)
+	http.HandleFunc("/lack", lack)
+	http.HandleFunc("/exportDataset", exportDataset)
+	http.HandleFunc("/loadDataset", loadDataset)
+	fs := http.FileServer(http.Dir("tool/benchmark/chart"))
+	// 创建静态文件服务器
+
+	// 使用 http.Handle 而不是 http.HandleFunc
+	http.Handle("/chart/", http.StripPrefix("/chart/", fs))
 
 	// 启动HTTP服务器
 	fmt.Println("Server is running on http://localhost:8111")
