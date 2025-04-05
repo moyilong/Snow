@@ -14,6 +14,7 @@ FROM ubuntu:latest
 WORKDIR /
 
 COPY --from=build --chmod=0777 /snow /snow
+COPY ./config/config.yml /config.yml
 
 ENV TZ=Asia/Shanghai
 
