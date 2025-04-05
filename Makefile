@@ -31,3 +31,6 @@ dist/config.yml:
 	cp config/config.yml dist/config.yml
 
 all: ${ALL_DIST} dist/config.yml
+
+test:
+	go build -v ./...
