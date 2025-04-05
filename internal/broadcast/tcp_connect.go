@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"net"
@@ -51,7 +50,7 @@ func NewServer(config *Config, action Action) (*Server, error) {
 		},
 		Action:           action,
 		client:           dialer.Dialer(clientAddress, config.TCPTimeout),
-		isClosed:         false,
+		IsClosed:         false,
 		StopCh:           make(chan struct{}),
 		sendChan:         make(chan *SendData),
 		clientWorkerPool: tool.NewWorkerPool(1),
@@ -98,7 +97,7 @@ func (s *Server) startAcceptingConnections() {
 			log.Println("Error accepting connection:", err)
 			continue
 		}
-		log.Printf("get connect from %s", conn.RemoteAddr().String())
+		//log.Printf("get connect from %s", conn.RemoteAddr().String())
 		tcpConn := conn.(*net.TCPConn)
 		tcpConn.SetLinger(0)
 		conn = tcpConn
@@ -138,12 +137,12 @@ func (s *Server) handleConnection(conn net.Conn, isServer bool) {
 		header := make([]byte, 4)
 		_, err := io.ReadFull(reader, header)
 		if err != nil {
-			fmt.Println(errors.Is(err, io.EOF))
+			log.Println(errors.Is(err, io.EOF))
 			log.Printf("Read header error from %v: %v\n", conn.RemoteAddr(), err)
 			if err == io.EOF {
-				fmt.Println("Normal EOF: connection closed by client")
+				log.Println("Normal EOF: connection closed by client")
 			}
-			fmt.Println(conn.RemoteAddr().String())
+			log.Println(conn.RemoteAddr().String())
 			member := tool.IPv4To6Bytes(conn.RemoteAddr().String())
 			s.Member.RemoveMember(member, false)
 			return
@@ -167,7 +166,7 @@ func (s *Server) handleConnection(conn net.Conn, isServer bool) {
 	}
 }
 
-func (s *Server) connectToPeer(addr string) (net.Conn, error) {
+func (s *Server) ConnectToPeer(addr string) (net.Conn, error) {
 	s.Member.Lock()
 	defer s.Member.Unlock()
 	member := s.Member.GetMember(addr)
@@ -177,17 +176,17 @@ func (s *Server) connectToPeer(addr string) (net.Conn, error) {
 	// 赋值给 Dialer 的 LocalAddr
 	conn, err := s.client.Dial("tcp", addr)
 	if err != nil {
-		log.Printf("Failed to connect to %s: %v\n", addr, err)
+		//log.Printf("Failed to connect to %s: %v\n", addr, err)
 		return nil, err
 	}
-	log.Printf("%sConnected to %s\n", s.Config.ServerAddress, addr)
+	//log.Printf("%sConnected to %s\n", s.Config.ServerAddress, addr)
 	metaData := membership.NewEmptyMetaData()
 	metaData.SetClient(conn)
 	s.Member.PutMemberIfNil(addr, metaData)
 	return conn, nil
 }
 func (s *Server) SendMessage(ip string, payload []byte, msg []byte) {
-	if s.isClosed {
+	if s.IsClosed {
 		return
 	}
 
@@ -195,7 +194,7 @@ func (s *Server) SendMessage(ip string, payload []byte, msg []byte) {
 	var conn net.Conn
 	var err error
 	if metaData == nil {
-		conn, err = s.connectToPeer(ip)
+		conn, err = s.ConnectToPeer(ip)
 		if err != nil {
 			log.Println(s.Config.ServerAddress, "can't connect to ", ip)
 			log.Println(err)
@@ -206,7 +205,7 @@ func (s *Server) SendMessage(ip string, payload []byte, msg []byte) {
 	}
 	if conn == nil {
 		//先建立一次链接进行尝试
-		newConn, err := s.connectToPeer(ip)
+		newConn, err := s.ConnectToPeer(ip)
 		if err != nil {
 			log.Println(s.Config.ServerAddress, "can't connect to ", ip)
 			return
@@ -235,7 +234,7 @@ func (s *Server) replayMessage(conn net.Conn, config *Config, msg []byte) {
 	length := uint32(len(msg))
 	header := make([]byte, 4)
 	binary.BigEndian.PutUint32(header, length)
-	fmt.Println(conn.RemoteAddr().String())
+	log.Println(conn.RemoteAddr().String())
 	data := &SendData{
 		Conn:    conn,
 		Header:  header,
@@ -267,8 +266,8 @@ func (s *Server) Sender() {
 	for data := range s.sendChan {
 		_, err := data.Conn.Write(data.Header)
 		if err != nil {
-			s.ReportLeave(tool.IPv4To6Bytes(data.Conn.RemoteAddr().String()))
 			log.Printf("Error sending header to %v: %v", data.Conn.RemoteAddr(), err)
+			//s.ReportLeave(tool.IPv4To6Bytes(data.Conn.RemoteAddr().String()))
 			continue
 		}
 		_, err = data.Conn.Write(data.Payload)
